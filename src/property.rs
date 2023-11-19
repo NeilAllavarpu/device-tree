@@ -3,11 +3,17 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::fmt::Debug;
 
-use crate::parse::{self, ParseStrError};
+use std::{collections::HashMap, ffi::CStr};
+
+use crate::{
+    map::Map,
+    parse::{self, ParseStrError, U32ByteSlice},
+};
 
 /// A basic, fixed string
-#[derive(Debug)]
-struct String(Box<str>);
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+
+pub(crate) struct String(pub(crate) Box<str>);
 
 impl TryFrom<&[u8]> for String {
     type Error = ParseStrError;
@@ -17,8 +23,82 @@ impl TryFrom<&[u8]> for String {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Model {
+    ManufacturerModel(Box<str>, Box<str>),
+    Other(Box<str>),
+}
+
+impl TryFrom<&[u8]> for Model {
+    type Error = ParseStrError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let string = parse::parse_str(value)?;
+
+        let mut parts = string.split(',');
+        Ok(
+            if let Some(manufacturer) = parts.next()
+                && let Some(model) = parts.next()
+                && let None = parts.next()
+            {
+                Self::ManufacturerModel(manufacturer.into(), model.into())
+            } else {
+                Self::Other(string.into())
+            },
+        )
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Range {
+    pub(crate) child_address: u64,
+    pub(crate) parent_address: u64,
+    pub(crate) size: u64,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+
+pub(crate) struct Reg {
+    pub(crate) address: u64,
+    pub(crate) size: u64,
+}
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ModelList(pub(crate) Box<[Model]>);
+
+pub fn parse_model_list(mut value: &[u8]) -> Result<Box<[Model]>, ParseStrError> {
+    let mut models = Vec::new();
+    while !value.is_empty() {
+        let model = Model::try_from(value)?;
+        let length = match &model {
+            Model::ManufacturerModel(manufacturer, model) => manufacturer
+                .len()
+                .checked_add(2) // 1 for nul byte, 1 for comma
+                .and_then(|length| length.checked_add(model.len()))
+                .expect("The null byte should have already been found"),
+            Model::Other(string) if string.is_empty() => {
+                assert_eq!(value.take_first(), Some(&0));
+                continue;
+            }
+            Model::Other(string) if !string.is_empty() => string
+                .len()
+                .checked_add(1)
+                .expect("The null byte should have already been found"),
+            Model::Other(_) => unreachable!(),
+        };
+
+        #[expect(clippy::expect_used)]
+        value
+            .take(..length)
+            .expect("CStr should not go past the end of the slice");
+
+        models.push(model);
+    }
+    Ok(models.into_boxed_slice())
+}
+
 /// A list of strings
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+
 struct StringList(Box<[String]>);
 
 impl TryFrom<&[u8]> for StringList {
@@ -46,8 +126,9 @@ impl TryFrom<&[u8]> for StringList {
 }
 
 /// A 32-bit integer
-#[derive(Debug)]
-struct U32(u32);
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+
+pub(crate) struct U32(pub u32);
 
 impl TryFrom<&[u8]> for U32 {
     type Error = ();
@@ -64,7 +145,8 @@ impl TryFrom<&[u8]> for U32 {
 }
 
 /// A 64-bit integer
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+
 struct U64(u64);
 
 impl TryFrom<&[u8]> for U64 {
@@ -81,17 +163,15 @@ impl TryFrom<&[u8]> for U64 {
     }
 }
 
-struct Empty();
-
-#[derive(Debug)]
-enum StatusType {
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Status {
     Ok,
     Disabled,
     Reserved,
     Fail(Box<str>),
 }
 
-impl TryFrom<&[u8]> for StatusType {
+impl TryFrom<&[u8]> for Status {
     type Error = ();
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
@@ -114,8 +194,8 @@ impl TryFrom<&[u8]> for StatusType {
     }
 }
 
-#[derive(Debug)]
-enum EnableType {
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EnableType {
     SpinTable(u64),
     VendorSpecific(Box<str>, Box<str>),
 }
@@ -129,7 +209,7 @@ impl TryFrom<&[u8]> for EnableType {
                 if string == "spin-table" {
                     Ok(Self::SpinTable(0))
                 } else {
-                    let mut chunks = string.split(",");
+                    let mut chunks = string.split(',');
                     let vendor = chunks.next().ok_or(())?;
                     let method = chunks.next().ok_or(())?;
                     if chunks.next().is_some() {
@@ -149,7 +229,7 @@ impl TryFrom<&[u8]> for EnableType {
 /// Various properties that a `Node` may have.
 ///
 /// Not all properties may be present in any given `Node`
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Property {
     /// The compatible property value consists of one or more strings that define the specific programming model for the device. This list of strings should be used by a client program for device driver selection. The property value consists of a concatenated list of null terminated strings, from most specific to most general. They allow a device to express its compatibility with a family of similar devices, potentially allowing a single device driver to match against several devices.
     ///
@@ -165,7 +245,7 @@ pub enum Property {
     ///
     /// In this example, an operating system would first try to locate a device driver that supported fsl,mpc8641. If a
     /// driver was not found, it would then try to locate a driver that supported the more general ns16550 device type.
-    Compatible(StringList),
+    // Compatible(ModelList),
     /// The model property value is a <string> that specifies the manufacturer’s model number of the device.
     ///
     /// The recommended format is: "manufacturer,model", where manufacturer is a string describing the
@@ -174,7 +254,7 @@ pub enum Property {
     /// Example:
     ///
     ///     model = "fsl,MPC8349EMITX";
-    Model(String),
+    // Model(Model),
     /// The phandle property specifies a numerical identifier for a node that is unique within the devicetree. The phandle property value is used by other nodes that need to refer to the node associated with the property.
     PHandle(U32),
     /// The #address-cells and #size-cells properties may be used in any device node that has children in the devicetree hierarchy and describes how child device nodes should be addressed. The #address-cells property defines the number of <u32> cells used to encode the address field in a child node’s reg property. The #size-cells property defines the number of <u32> cells used to encode the size field in a child node’s reg property.
@@ -193,11 +273,15 @@ pub enum Property {
     /// The device_type property was used in IEEE 1275 to describe the device’s FCode programming model. Because DTSpec does not have FCode, new use of the property is deprecated, and it should be included only on cpu and memory nodes for compatibility with IEEE 1275–derived devicetrees.
     DeviceType(String),
     /// The status property indicates the operational status of a device. The lack of a status property should be treated as if the property existed with the value of "okay".
-    Status(StatusType),
+    Status(Status),
     /// Describes the method by which a CPU in a disabled state is enabled. This property is required for CPUs with a status property with a value of "disabled". The value consists of one or more strings that define the method to release this CPU. If a client program recognizes any of the methods, it may use it.
     EnableMethod(EnableType),
     /// The cpu-release-addr property is required for cpu nodes that have an enable-method property value of "spin-table". The value specifies the physical address of a spin table entry that releases a secondary CPU from its spin loop.
     ReleaseAddr(U64),
+    RegRaw(Box<[u8]>),
+    Reg(Box<[u8]>),
+    Range(Range),
+    InterruptParent(U32),
     /// Fallthrough case for unhandled/nonstandard property types
     Other(Box<str>, Box<[u8]>),
 }
@@ -211,17 +295,19 @@ macro_rules! matcher {
     };
 }
 
+// struct
+
 impl Property {
     /// Attempts to parse a name and value into a property according to its predefined type.
     ///
     /// Returns `None` if the value coercion fails
-    pub fn from_name_and_value(name: &str, value: &[u8]) -> Option<Self> {
+    pub(crate) fn from_name_and_value(name: &str, value: &[u8]) -> Option<Self> {
         // match name {
         // "compatible" => value.try_into().ok().map(Self::Compatible),
         matcher!(
             name: value,
-            "compatible" => Self::Compatible,
-            "model" => Self::Model,
+            // "compatible" => Self::Compatible,
+            // "model" => Self::Model,
             "phandle" => Self::PHandle,
             "#address-cells" => Self::AddressCells,
             "#size-cells" => Self::SizeCells,
@@ -230,12 +316,55 @@ impl Property {
             "device_type" => Self::DeviceType,
             "status" => Self::Status,
             "enable-method" => Self::EnableMethod,
+            "interrupt-parent" => Self::InterruptParent,
             "cpu-release-addr" => Self::ReleaseAddr
         )
         // _ => Some(Self::Other(name.into(), value.into())),
         // }
     }
+
+    pub(crate) fn evaluate(mut properties: Vec<Self>) -> Box<[Self]> {
+        properties.sort_unstable();
+        properties.into_boxed_slice()
+    }
 }
 
-// parse a singular node
-// fn parse_node(data: &[u8]) -> Option<Node<impl Allocator>> {}
+// const fn const_unwrap<T, E>(value: Result<T, E>) -> T {
+//     if let Ok(value) = value {
+//         value
+//     } else {
+//         unreachable!()
+//     }
+// }
+
+pub const fn to_c_str(string: &[u8]) -> &CStr {
+    if let Ok(s) = CStr::from_bytes_with_nul(string) {
+        s
+    } else {
+        unreachable!()
+    }
+}
+
+pub(crate) struct PropertyMap<'a>(Map<Box<CStr>, U32ByteSlice<'a>>);
+
+pub enum PropertyLookupError {
+    InvalidType,
+    NotPresent,
+}
+
+impl PropertyMap<'_> {
+    pub(crate) fn address_cells(&self) -> Result<u64, PropertyLookupError> {
+        self.0
+            .get(to_c_str(b"#address-cells\0"))
+            .ok_or(PropertyLookupError::NotPresent)
+            .and_then(|x| {
+                x.clone()
+                    .try_into()
+                    .map_err(|_| PropertyLookupError::InvalidType)
+            })
+    }
+
+    pub fn get(&self, attribute: &CStr) -> Option<&U32ByteSlice> {
+        self.0.get(attribute)
+    }
+}

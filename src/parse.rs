@@ -1,7 +1,118 @@
-use core::{ffi::CStr, mem, ptr::NonNull, str};
+use core::{
+    ffi::{CStr, FromBytesWithNulError},
+    mem,
+    ptr::NonNull,
+    str,
+};
+#[derive(Debug, Clone, Copy)]
+pub struct U32ByteSlice<'bytes> {
+    bytes: &'bytes [u32],
+}
+
+impl<'bytes> U32ByteSlice<'bytes> {
+    pub const fn new(bytes: &'bytes [u32]) -> Self {
+        Self { bytes }
+    }
+
+    pub fn consume_u32(&mut self) -> Option<u32> {
+        self.bytes.take_first().copied().map(u32::from_be)
+    }
+
+    pub fn consume_u64(&mut self) -> Option<u64> {
+        self.bytes
+            .take(..2)
+            .map(|bytes| u64::from(bytes[0]) << 32 | u64::from(bytes[1]))
+    }
+
+    pub fn take(&mut self, count: usize) -> Option<Self> {
+        self.bytes.take(..count).map(Self::new)
+    }
+
+    pub fn consume_c_str(&mut self) -> Option<&'bytes CStr> {
+        let c_str = CStr::from_bytes_until_nul((*self).into())
+            .map_err(|_err| ParseStrError::NotNullTerminated)
+            .unwrap();
+
+        self.bytes
+            .take(
+                ..c_str
+                    .to_bytes_with_nul()
+                    .len()
+                    .div_ceil(mem::size_of::<u32>()),
+            )
+            .expect("The CStr should remain within the bounds of the slice");
+
+        Some(c_str)
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    pub const fn len(&self) -> usize {
+        self.bytes.len()
+    }
+}
 
 #[derive(Debug)]
-pub(crate) struct ByteParser<'a>(&'a [u32]);
+pub enum TryFromError {
+    Empty,
+    Excess,
+}
+
+impl TryFrom<U32ByteSlice<'_>> for u32 {
+    type Error = TryFromError;
+
+    fn try_from(mut value: U32ByteSlice<'_>) -> Result<Self, Self::Error> {
+        let result = value.consume_u32().ok_or(TryFromError::Empty);
+        if value.is_empty() {
+            result
+        } else {
+            Err(TryFromError::Excess)
+        }
+    }
+}
+
+impl TryFrom<U32ByteSlice<'_>> for u64 {
+    type Error = TryFromError;
+
+    fn try_from(mut value: U32ByteSlice<'_>) -> Result<Self, Self::Error> {
+        let result = value.consume_u64().ok_or(TryFromError::Empty);
+        if value.is_empty() {
+            result
+        } else {
+            Err(TryFromError::Excess)
+        }
+    }
+}
+
+impl<'bytes> From<U32ByteSlice<'bytes>> for &'bytes [u8] {
+    fn from(value: U32ByteSlice<'bytes>) -> Self {
+        // SAFETY: The pointer is valid, accessible, and initalized because it comes from a valid, initialized region of memory and `u32`s are safe to transmute to `u8`s
+        // The lifetime of the underlying data is guaranteed to be immutable because the original shared slice guarantees the underlying bytes are not mutated
+        unsafe {
+            NonNull::slice_from_raw_parts(
+                NonNull::from(value.bytes).as_non_null_ptr().cast(),
+                mem::size_of_val(value.bytes) / mem::size_of::<u8>(),
+            )
+            .as_ref()
+        }
+    }
+}
+
+impl<'bytes> From<U32ByteSlice<'bytes>> for &'bytes [u32] {
+    fn from(value: U32ByteSlice<'bytes>) -> Self {
+        value.bytes
+    }
+}
+
+impl<'bytes> TryFrom<U32ByteSlice<'bytes>> for &'bytes CStr {
+    type Error = FromBytesWithNulError;
+
+    fn try_from(value: U32ByteSlice<'bytes>) -> Result<Self, Self::Error> {
+        CStr::from_bytes_with_nul(value.into())
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum ParseStrError {
@@ -14,77 +125,4 @@ pub(crate) fn parse_str(bytes: &[u8]) -> Result<&str, ParseStrError> {
     let c_str =
         CStr::from_bytes_until_nul(bytes).map_err(|_err| ParseStrError::NotNullTerminated)?;
     c_str.to_str().map_err(ParseStrError::Utf8Error)
-}
-
-/// Coerces a `u32` slice into a `u8` slice
-fn u32_to_u8_slice(bytes: &[u32]) -> &[u8] {
-    unsafe {
-        NonNull::slice_from_raw_parts(
-            NonNull::from(bytes).as_non_null_ptr().cast(),
-            mem::size_of_val(bytes) / mem::size_of::<u8>(),
-        )
-        .as_ref()
-    }
-}
-
-pub(crate) fn u8_to_u32_slice(bytes: &[u8]) -> Option<&[u32]> {
-    let ptr = NonNull::from(bytes).as_non_null_ptr().cast::<u32>();
-    if ptr.as_ptr().is_aligned() && mem::size_of_val(bytes) % mem::size_of::<u32>() == 0 {
-        Some(unsafe {
-            NonNull::slice_from_raw_parts(ptr, mem::size_of_val(bytes) / mem::size_of::<u32>())
-                .as_ref()
-        })
-    } else {
-        None
-    }
-}
-
-impl<'a> ByteParser<'a> {
-    /// Creates a parser wrapping around the provided bytes
-    pub(crate) const fn new(bytes: &'a [u32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Extracts a big-endian `u32` from a sequence of bytes
-    ///
-    /// Returns `None` if there are not enough bytes to form a `u32`
-    pub(crate) fn consume_u32_be(&mut self) -> Option<u32> {
-        self.0.take_first().map(|x| u32::from_be(*x))
-    }
-
-    /// Extracts a null-terminated string (as a Rust `str`) from a sequence of bytes
-    ///
-    /// Returns any errors if string conversion fails
-    #[expect(clippy::unwrap_in_result)]
-    pub(crate) fn consume_str(&mut self) -> Result<&str, ParseStrError> {
-        let string = parse_str(u32_to_u8_slice(self.0))?;
-        #[expect(clippy::expect_used)]
-        self.0
-            .take(
-                ..(string
-                    .len()
-                    .checked_add(1)
-                    .expect("The null byte should have already been found"))
-                .div_ceil(mem::size_of::<u32>()),
-            )
-            .expect("CStr should not go past the end of the slice");
-        Ok(string)
-    }
-
-    /// Extracts a slice of bytes from a sequence of bytes
-    ///
-    /// Returns `None` if insufficient bytes are available
-    pub(crate) fn consume_bytes(&mut self, len: usize) -> Option<&[u8]> {
-        self.0.take(..len.div_ceil(mem::size_of::<u32>())).map(|x| {
-            #[expect(clippy::expect_used)]
-            u32_to_u8_slice(x)
-                .get(..len)
-                .expect("Should have at least `len` elements")
-        })
-    }
-
-    /// Returns whether or not the bytes are exhausted
-    pub(crate) const fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
 }
