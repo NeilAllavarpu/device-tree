@@ -15,6 +15,8 @@ use core::num::NonZeroU32;
 use core::num::NonZeroU8;
 
 pub mod cpu;
+pub mod memory_region;
+pub mod root;
 
 /// A Device Tree Node
 #[derive(Debug)]
@@ -53,6 +55,11 @@ impl PropertyKeys {
 
 // const RESERVED_MEMORY_NODE: &'static NameRef
 
+#[derive(Debug, Clone)]
+pub enum CellError {
+    NotPresent,
+    Invalid,
+}
 impl<'a> RawNode<'a> {
     /// Creates a node with the given name, children, and properties
     pub(crate) fn new(
@@ -65,20 +72,23 @@ impl<'a> RawNode<'a> {
         }
     }
 
-    fn extract_cell_counts(&mut self) -> (u32, u32) {
-        fn parse_cells(bytes: U32ByteSlice<'_>) -> u32 {
-            bytes.try_into().unwrap()
+    fn extract_cell_counts(&mut self) -> (Result<u8, CellError>, Result<u8, CellError>) {
+        fn parse_cells(bytes: U32ByteSlice<'_>) -> Result<u8, CellError> {
+            u32::try_from(bytes)
+                .ok()
+                .and_then(|x| u8::try_from(x).ok())
+                .ok_or(CellError::Invalid)
         }
 
         (
             self.properties
                 .remove(&PropertyKeys::ADDRESS_CELLS)
-                .map(parse_cells)
-                .unwrap_or(2),
+                .ok_or(CellError::NotPresent)
+                .and_then(parse_cells),
             self.properties
                 .remove(&PropertyKeys::SIZE_CELLS)
-                .map(parse_cells)
-                .unwrap_or(1),
+                .ok_or(CellError::NotPresent)
+                .and_then(parse_cells),
         )
     }
 }
@@ -95,7 +105,7 @@ pub(crate) struct Node<'a> {
     pub(crate) other: Map<Box<CStr>, Box<[u32]>>,
 }
 
-fn parse_cells(bytes: &mut U32ByteSlice<'_>, address_cells: u32, size_cells: u32) -> (u64, u64) {
+fn parse_cells(bytes: &mut U32ByteSlice<'_>, address_cells: u8, size_cells: u8) -> (u64, u64) {
     let address = match address_cells {
         0 => unreachable!("Address cells should never be 0"),
         1 => bytes.consume_u32().map(u64::from),
@@ -124,8 +134,11 @@ fn parse_cells(bytes: &mut U32ByteSlice<'_>, address_cells: u32, size_cells: u32
 }
 
 impl<'a> Node<'a> {
-    fn new(mut value: RawNode<'a>, address_cells: u32, size_cells: u32) -> Self {
+    fn new(mut value: RawNode<'a>, address_cells: u8, size_cells: u8) -> Self {
+        println!("{:?}", value);
         let (child_address_cells, child_size_cells) = value.extract_cell_counts();
+        // let (child_address_cells, child_size_cells) =
+        //     (child_address_cells.unwrap(), child_size_cells.unwrap());
 
         Self {
             children: value
@@ -134,7 +147,7 @@ impl<'a> Node<'a> {
                 .map(|(name, raw_node)| {
                     (
                         name,
-                        Rc::new(Node::new(raw_node, child_address_cells, child_size_cells)),
+                        Rc::new(Node::new(raw_node, child_address_cells.clone().unwrap(), child_size_cells.clone().unwrap())),
                     )
                 })
                 .collect(),
@@ -165,20 +178,20 @@ impl<'a> Node<'a> {
             ranges: value.properties.remove(&PropertyKeys::RANGES).map(|mut bytes| {
                 let mut range_list = Vec::with_capacity(
                     bytes.len()
-                        / usize::try_from(address_cells + size_cells + child_size_cells).unwrap(),
+                        / usize::try_from(address_cells + size_cells + child_size_cells.clone().unwrap()).unwrap(),
                 );
                 while !bytes.is_empty() {
                     range_list.push(Range {
-                        child_address: match child_address_cells {
-                            0 => unreachable!("Address cells should never be 0"),
-                            1 => bytes.consume_u32().map(u64::from),
-                            2 => bytes.consume_u64(),
+                        child_address: match child_address_cells.clone() {
+                            Ok(0) => unreachable!("Address cells should never be 0"),
+                            Ok(1) => bytes.consume_u32().map(u64::from),
+                            Ok(2) => bytes.consume_u64(),
                             count => {
                                 let v = bytes.consume_u64();
-                                for _ in 2..count {
+                                for _ in 2..count.unwrap() {
                                     if let Some(extra) = bytes.consume_u32() && extra != 0 {
                                         eprintln!(
-                                            "Cannot handle address cell count {child_address_cells}: 0x{extra:X}"
+                                            "Cannot handle address cell count {child_address_cells:?}: 0x{extra:X}"
                                         );
                                     }
                                 }
@@ -193,10 +206,10 @@ impl<'a> Node<'a> {
                             _ => unimplemented!("Cannot handle address cell count {address_cells}"),
                         }
                         .unwrap(),
-                        size: match child_size_cells {
-                            0 => unreachable!("Size of a range should never be 0"),
-                            1 => bytes.consume_u32().map(u64::from),
-                            2 => bytes.consume_u64(),
+                        size: match child_size_cells.clone() {
+                            Ok(0) => unreachable!("Size of a range should never be 0"),
+                            Ok(1) => bytes.consume_u32().map(u64::from),
+                            Ok(2) => bytes.consume_u64(),
                             _ => unimplemented!("Cannot handle address cell count {address_cells}"),
                         }
                         .unwrap(),
@@ -227,179 +240,6 @@ pub enum ManuModel {
 
 pub enum ChassisType {
     Desktop,
-}
-
-#[derive(Debug)]
-pub struct RootNode<'a> {
-    model: Model,
-    compatible: Box<[Model]>,
-    serial_number: Option<Box<str>>,
-    chassis_type: Option<ChassisType>,
-    // higher_caches: HashMap<u32, Rc<HigherLevelCache>>,
-    // reserved_memory: HashMap<Box<CStr>, ReservedMemoryNode>,
-    // memory: Box<[MemoryRegion]>,
-    pub cpus: Map<u32, Rc<cpu::Node<'a>>>,
-    pub node: Node<'a>,
-}
-
-impl RootNode<'_> {
-    // pub fn get_children(&self) -> impl Iterator<Item = &(Box<CStr>, Option<u64>)> {
-    //     self.node.children.keys()
-    // }
-}
-
-impl<'a> TryFrom<RawNode<'a>> for RootNode<'a> {
-    type Error = ();
-
-    fn try_from(mut value: RawNode<'a>) -> Result<Self, Self::Error> {
-        let model = Model::try_from(<&[u8]>::from(
-            value.properties.remove(&PropertyKeys::MODEL).ok_or(())?,
-        ))
-        .unwrap();
-
-        let compatible = parse_model_list(
-            value
-                .properties
-                .remove(&PropertyKeys::COMPATIBLE)
-                .ok_or(())?
-                .into(),
-        )
-        .unwrap();
-
-        let serial_number =
-            value
-                .properties
-                .remove(&PropertyKeys::SERIAL_NUMBER)
-                .map(|serial_number| {
-                    <&CStr>::try_from(serial_number)
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .into()
-                });
-
-        let (address_cells, size_cells) = value.extract_cell_counts();
-
-        let mut cpus_root = value
-            .children
-            .remove(&NameRef::try_from(b"cpus".as_slice()).unwrap())
-            .unwrap();
-        let (cpu_addr_cells, cpu_size_cells) = cpus_root.extract_cell_counts();
-        // assert!(cpu_size_cells == 0);
-        // cpus_root.properties.remove(PropertyKeys::PHANDLE);
-
-        let mut caches = cpus_root
-            .children
-            .extract_if(|name, _| {
-                !name
-                    .node_name()
-                    .starts_with(<&NameSlice>::try_from(b"cpu".as_slice()).unwrap())
-            })
-            .map(|(x, y)| {
-                let (phandle, cache) = HigherLevelCache::new(y, cpu_addr_cells).unwrap();
-                (
-                    // x.strip_prefix("cpu@").unwrap().parse().unwrap(),
-                    phandle,
-                    cache.into(),
-                )
-            })
-            .collect();
-
-        let cpu_bases = cpus_root.children.extract_if(|name, _| {
-            name.node_name()
-                .starts_with(<&NameSlice>::try_from(b"cpu".as_slice()).unwrap())
-        });
-
-        let cpus: Map<_, _> = cpu_bases
-            .map(|(name, node)| {
-                (
-                    u32::from_str_radix(
-                        <&[ascii::Char]>::try_from(name.unit_address().unwrap())
-                            .unwrap()
-                            .as_str(),
-                        16,
-                    )
-                    .unwrap(),
-                    Rc::new(
-                        cpu::Node::new(
-                            node,
-                            &cpus_root.properties,
-                            &caches,
-                            NonZeroU8::new(u8::try_from(cpu_addr_cells).unwrap()).unwrap(),
-                        )
-                        .unwrap(),
-                    ),
-                )
-            })
-            .collect();
-
-        assert!(cpus.iter().all(|(id, node)| node.reg == u32::from(*id)));
-        // caches.shrink_to_fit();
-
-        // let rmem = value
-        //     .children
-        //     .remove(PropertyKeys::RESERVED_MEMORY)
-        //     .unwrap();
-        let (a, b) = value.extract_cell_counts();
-        // let reserved_memory = rmem
-        //     .children
-        //     .into_iter()
-        //     .map(|(name, value)| (name.into(), ReservedMemoryNode::new(value, a, b)))
-        //     .collect();
-
-        // println!(
-        //     "root is {:?}",
-        //     value.children.get(&(PropertyKeys::MEMORY, Some(0)))
-        // );
-
-        // let mem = value
-        //     .children
-        //     .extract_if(|&(name, _), _| name.into().begin)
-        //     .flat_map(|((_, _), mut raw_node)| {
-        //         assert_eq!(
-        //             raw_node
-        //                 .properties
-        //                 .remove(PropertyKeys::DEVICE_TYPE)
-        //                 .map(|x| x.into()),
-        //             Some(&b"memory\0\0"[..])
-        //         );
-        //         let hotpluggable = raw_node
-        //             .properties
-        //             .remove(PropertyKeys::HOTPLUGGABLE)
-        //             .is_some();
-
-        //         let reg = if let Some(mut bytes) = raw_node.properties.remove(PropertyKeys::REG) {
-        //             let mut reg = Vec::new();
-        //             while !bytes.is_empty() {
-        //                 let (start, size) = parse_cells(&mut bytes, address_cells, size_cells);
-        //                 reg.push(MemoryRegion {
-        //                     start,
-        //                     size,
-        //                     hotpluggable,
-        //                 });
-        //             }
-        //             reg.into_iter()
-        //         } else {
-        //             unreachable!();
-        //         };
-        //         reg
-        //     })
-        //     .collect();
-
-        // println!("root is {:?}", mem);
-
-        Ok(Self {
-            model,
-            compatible,
-            serial_number,
-            chassis_type: None,
-            cpus,
-            // memory: mem,
-            // reserved_memory,
-            // higher_caches: caches,
-            node: Node::new(value, address_cells, size_cells),
-        })
-    }
 }
 
 // TODO: Are these not actually required for a device tree to fully implement?
@@ -463,7 +303,7 @@ fn cache_desc<'b>(
 }
 
 impl<'a> HigherLevelCache<'a> {
-    fn new(mut value: RawNode<'a>, address_cells: u32) -> Result<(u32, Self), ()> {
+    fn new(mut value: RawNode<'a>, address_cells: u8) -> Result<(u32, Self), ()> {
         let phandle = value
             .properties
             .remove(&PropertyKeys::PHANDLE)
@@ -525,7 +365,7 @@ pub struct ReservedMemoryNode<'a> {
 }
 
 impl<'a> ReservedMemoryNode<'a> {
-    fn new(mut value: RawNode<'a>, address_cells: u32, size_cells: u32) -> Self {
+    fn new(mut value: RawNode<'a>, address_cells: u8, size_cells: u8) -> Self {
         let size_prop = value.properties.remove(&PropertyKeys::SIZE);
         let alignment_prop = value.properties.remove(&PropertyKeys::ALIGNMENT);
         let (size, alignment) = match size_cells {
@@ -574,11 +414,4 @@ impl<'a> ReservedMemoryNode<'a> {
             },
         }
     }
-}
-
-#[derive(Debug)]
-pub struct MemoryRegion {
-    start: u64,
-    size: u64,
-    hotpluggable: bool,
 }

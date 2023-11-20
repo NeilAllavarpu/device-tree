@@ -4,7 +4,7 @@
 
 use crate::node::cpu;
 use crate::{
-    map::Map, node::RawNode, node::RootNode, node_name::NameRef, parse::U32ByteSlice,
+    map::Map, node::root, node::RawNode, node_name::NameRef, parse::U32ByteSlice,
     property::to_c_str,
 };
 use alloc::{rc::Rc, vec::Vec};
@@ -57,7 +57,7 @@ impl core::error::Error for DeviceTreeError {}
 
 #[derive(Debug)]
 pub struct DeviceTree<'a> {
-    root: RootNode<'a>,
+    root: root::Node<'a>,
     version: u32,
     // aliases: HashMap<Name, Box<str>>,
     boot_args: Option<Box<str>>,
@@ -311,10 +311,9 @@ impl<'a> DeviceTree<'a> {
                         );
                     }
 
-                    let root: RootNode = root
-                        .try_into()
-                        .map_err(|_err| DeviceTreeError::Parsing)
-                        .unwrap();
+                    let root: root::Node = root.try_into().unwrap();
+                    // .map_err(|_err| DeviceTreeError::Parsing)
+                    // .unwrap();
                     // println!(
                     //     "hi {:?}",
                     //     root.node
@@ -361,7 +360,7 @@ impl<'a> DeviceTree<'a> {
     }
 
     #[inline]
-    pub fn get_root(&self) -> &RootNode {
+    pub fn get_root(&self) -> &root::Node {
         &self.root
     }
 

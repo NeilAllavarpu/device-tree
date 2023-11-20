@@ -7,6 +7,7 @@ use core::fmt::Formatter;
 use core::fmt::Write;
 use core::ops::Deref;
 use core::ptr;
+use core::str;
 
 /// A valid character for a node name.
 ///
@@ -104,7 +105,7 @@ impl From<Char> for ascii::Char {
 /// A wrapper type for a slice of node name characters
 #[repr(transparent)]
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct NameSlice([Char]);
+pub struct NameSlice([Char]);
 
 impl<'chars> From<&'chars [Char]> for &'chars NameSlice {
     #[inline]
@@ -129,7 +130,12 @@ impl TryFrom<&[u8]> for &NameSlice {
             .iter()
             .all(|&byte| Char::is_valid(byte))
             .then(|| {
+                #[expect(
+                    clippy::as_conversions,
+                    reason = "No other way to cast unsized pointer types"
+                )]
                 let pointer = ptr::from_ref(value) as *const NameSlice;
+                // SAFETY: the pointer was derived from a valid reference and the types are transmutable from one to another because the validity of the characters has been checked
                 unsafe { pointer.as_ref() }
                     .expect("Pointer should be derived from a non-null reference")
             })
@@ -184,7 +190,7 @@ pub struct NameRef<'bytes> {
     /// The node-name component of the name
     node_name: &'bytes NameSlice,
     /// The unit-address component of the name
-    unit_address: Option<&'bytes NameSlice>,
+    unit_address: Option<u64>,
 }
 
 impl NameRef<'_> {
@@ -194,31 +200,8 @@ impl NameRef<'_> {
     }
 
     /// Returns the unit-address component of this name, if it exists
-    pub const fn unit_address(&self) -> Option<&NameSlice> {
+    pub const fn unit_address(&self) -> Option<u64> {
         self.unit_address
-    }
-
-    pub fn to_owned(&self) -> NodeName {
-        NodeName {
-            node_name: self.node_name.to_owned(),
-            unit_address: self.unit_address.map(|x| x.to_owned()),
-        }
-    }
-}
-
-impl Debug for NameRef<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        <Self as Display>::fmt(self, f)
-    }
-}
-
-impl Display for NameRef<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        if let Some(unit_address) = self.unit_address {
-            write!(f, "{}@{}", self.node_name, unit_address)
-        } else {
-            write!(f, "{}", self.node_name)
-        }
     }
 }
 
@@ -227,8 +210,10 @@ impl NameRef<'_> {
     const MAX_NODE_NAME_LENGTH: usize = 31;
 }
 
+/// Errors that can occur while parsing a slice of bytes into a `NameRef`
 #[derive(Debug)]
 pub enum NameRefError {
+    /// A non-permitted character was in the name
     InvalidCharacters,
     /// The node-name component of a name must be 1-31 characters long
     TooLong,
@@ -239,7 +224,7 @@ impl<'bytes> TryFrom<&'bytes [u8]> for NameRef<'bytes> {
 
     #[inline]
     fn try_from(value: &'bytes [u8]) -> Result<Self, Self::Error> {
-        value.split_once(|&c| c == b'@').map_or_else(
+        value.split_once(|&char| char == b'@').map_or_else(
             || {
                 (value.len() <= Self::MAX_NODE_NAME_LENGTH)
                     .then(|| {
@@ -254,12 +239,27 @@ impl<'bytes> TryFrom<&'bytes [u8]> for NameRef<'bytes> {
                     .unwrap_or(Err(NameRefError::TooLong))
             },
             |(node_name, unit_address)| {
+                let mut address_parts = unit_address.split(|&char| char == b',');
+                let address = address_parts
+                    .next()
+                    .expect("Split iterator should always have at least one entry");
+                if address_parts.next().is_some() {
+                    eprintln!(
+                        "WARNING: unhandled comma inunit address: {}@{}",
+                        str::from_utf8(node_name).unwrap_or("{invalid}"),
+                        str::from_utf8(unit_address).unwrap_or("{invalid}"),
+                    );
+                }
                 (node_name.len() <= Self::MAX_NODE_NAME_LENGTH)
                     .then(|| {
                         node_name
                             .try_into()
                             .ok()
-                            .zip(unit_address.try_into().ok())
+                            .zip(
+                                address
+                                    .as_ascii()
+                                    .and_then(|x| u64::from_str_radix(x.as_str(), 16).ok()),
+                            )
                             .ok_or(NameRefError::InvalidCharacters)
                             .map(|(parsed_node_name, parsed_unit_address)| Self {
                                 node_name: parsed_node_name,
@@ -272,56 +272,45 @@ impl<'bytes> TryFrom<&'bytes [u8]> for NameRef<'bytes> {
     }
 }
 
-#[derive(PartialEq, Eq, Hash)]
-pub struct NodeName {
-    node_name: Box<[Char]>,
-    unit_address: Option<Box<[Char]>>,
-}
-
-impl NodeName {
-    fn as_ref(&self) -> NameRef<'_> {
-        NameRef {
-            node_name: (*self.node_name).into(),
-            unit_address: self.unit_address.as_ref().map(|x| x.as_ref().into()),
-        }
-    }
-}
-
 impl Debug for Char {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        <Self as Display>::fmt(self, f)
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        <Self as Display>::fmt(self, formatter)
     }
 }
 
 impl Display for Char {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_char(ascii::Char::from(*self).to_char())
-    }
-}
-
-impl Debug for NodeName {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        <Self as Display>::fmt(self, f)
-    }
-}
-
-impl Display for NodeName {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_ref())
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_char(ascii::Char::from(*self).to_char())
     }
 }
 
 impl Debug for NameSlice {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        <Self as Display>::fmt(self, f)
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        <Self as Display>::fmt(self, formatter)
     }
 }
 
 impl Display for NameSlice {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        for c in &self.0 {
-            f.write_char(ascii::Char::from(*c).to_char())?
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        for char in &self.0 {
+            formatter.write_char(ascii::Char::from(*char).to_char())?;
         }
         Ok(())
+    }
+}
+
+impl Debug for NameRef<'_> {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        <Self as Display>::fmt(self, formatter)
+    }
+}
+
+impl Display for NameRef<'_> {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        if let Some(unit_address) = self.unit_address {
+            write!(formatter, "{}@{}", self.node_name, unit_address)
+        } else {
+            write!(formatter, "{}", self.node_name)
+        }
     }
 }
