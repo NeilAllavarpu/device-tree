@@ -1,5 +1,5 @@
 use core::{
-    ffi::{CStr, FromBytesWithNulError},
+    ffi::{CStr, FromBytesUntilNulError, FromBytesWithNulError},
     mem,
     ptr::NonNull,
     str,
@@ -107,10 +107,10 @@ impl<'bytes> From<U32ByteSlice<'bytes>> for &'bytes [u32] {
 }
 
 impl<'bytes> TryFrom<U32ByteSlice<'bytes>> for &'bytes CStr {
-    type Error = FromBytesWithNulError;
+    type Error = FromBytesUntilNulError;
 
     fn try_from(value: U32ByteSlice<'bytes>) -> Result<Self, Self::Error> {
-        CStr::from_bytes_with_nul(value.into())
+        CStr::from_bytes_until_nul(value.into())
     }
 }
 

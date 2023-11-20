@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let root = device_tree.get_root();
 
-    println!("{:?}", device_tree.boot_cpu());
+    println!("{:X?}", device_tree.cpus());
     // print!("$ ");
     // stdout().flush().unwrap();
 

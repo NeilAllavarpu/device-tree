@@ -1,11 +1,9 @@
 use crate::map::Map;
 use crate::node_name::NameRef;
 use crate::node_name::NameSlice;
-use crate::node_name::NodeName;
 use crate::parse::U32ByteSlice;
 use crate::property::parse_model_list;
 use crate::property::to_c_str;
-use crate::property::EnableType;
 use crate::property::Model;
 use crate::property::Range;
 use crate::property::Status;
@@ -14,9 +12,9 @@ use alloc::rc::Rc;
 use core::ascii;
 use core::ffi::CStr;
 use core::num::NonZeroU32;
+use core::num::NonZeroU8;
 
-mod cpu;
-pub use cpu::CpuNode;
+pub mod cpu;
 
 /// A Device Tree Node
 #[derive(Debug)]
@@ -25,32 +23,32 @@ pub(crate) struct RawNode<'a> {
     pub(crate) properties: Map<&'a CStr, U32ByteSlice<'a>>,
 }
 
-struct PropertyKeys;
+pub struct PropertyKeys;
 
 impl PropertyKeys {
-    const ADDRESS_CELLS: &'static CStr = to_c_str(b"#address-cells\0");
-    const SIZE_CELLS: &'static CStr = to_c_str(b"#size-cells\0");
-    const REG: &'static CStr = to_c_str(b"reg\0");
-    const RANGES: &'static CStr = to_c_str(b"ranges\0");
-    const COMPATIBLE: &'static CStr = to_c_str(b"compatible\0");
-    const MODEL: &'static CStr = to_c_str(b"model\0");
-    const STATUS: &'static CStr = to_c_str(b"status\0");
-    const DEVICE_TYPE: &'static CStr = to_c_str(b"device_type\0");
-    const SERIAL_NUMBER: &'static CStr = to_c_str(b"serial-number\0");
-    const REUSABLE: &'static CStr = to_c_str(b"reusable\0");
-    const SIZE: &'static CStr = to_c_str(b"size\0");
-    const ALIGNMENT: &'static CStr = to_c_str(b"alignment\0");
-    const NO_MAP: &'static CStr = to_c_str(b"no-map\0");
-    const ALLOC_RANGES: &'static CStr = to_c_str(b"alloc-ranges\0");
-    const MEMORY: &'static CStr = to_c_str(b"memory\0");
-    const HOTPLUGGABLE: &'static CStr = to_c_str(b"hotpluggable\0");
-    const RESERVED_MEMORY: &'static CStr = to_c_str(b"reserved-memory\0");
-    const PHANDLE: &'static CStr = to_c_str(b"phandle\0");
-    const CACHE_LEVEL: &'static CStr = to_c_str(b"cache-level\0");
-    const CPU_RELEASE_ADDR: &'static CStr = to_c_str(b"cpu-release-addr\0");
-    const CACHE_UNIFIED: &'static CStr = to_c_str(b"cache-unified\0");
-    const NEXT_LEVEL_CACHE: &'static CStr = to_c_str(b"next-level-cache\0");
-    const ENABLE_METHOD: &'static CStr = to_c_str(b"enable-method\0");
+    pub const ADDRESS_CELLS: &'static CStr = to_c_str(b"#address-cells\0");
+    pub const SIZE_CELLS: &'static CStr = to_c_str(b"#size-cells\0");
+    pub const REG: &'static CStr = to_c_str(b"reg\0");
+    pub const RANGES: &'static CStr = to_c_str(b"ranges\0");
+    pub const COMPATIBLE: &'static CStr = to_c_str(b"compatible\0");
+    pub const MODEL: &'static CStr = to_c_str(b"model\0");
+    pub const STATUS: &'static CStr = to_c_str(b"status\0");
+    pub const DEVICE_TYPE: &'static CStr = to_c_str(b"device_type\0");
+    pub const SERIAL_NUMBER: &'static CStr = to_c_str(b"serial-number\0");
+    pub const REUSABLE: &'static CStr = to_c_str(b"reusable\0");
+    pub const SIZE: &'static CStr = to_c_str(b"size\0");
+    pub const ALIGNMENT: &'static CStr = to_c_str(b"alignment\0");
+    pub const NO_MAP: &'static CStr = to_c_str(b"no-map\0");
+    pub const ALLOC_RANGES: &'static CStr = to_c_str(b"alloc-ranges\0");
+    pub const MEMORY: &'static CStr = to_c_str(b"memory\0");
+    pub const HOTPLUGGABLE: &'static CStr = to_c_str(b"hotpluggable\0");
+    pub const RESERVED_MEMORY: &'static CStr = to_c_str(b"reserved-memory\0");
+    pub const PHANDLE: &'static CStr = to_c_str(b"phandle\0");
+    pub const CACHE_LEVEL: &'static CStr = to_c_str(b"cache-level\0");
+    pub const CPU_RELEASE_ADDR: &'static CStr = to_c_str(b"cpu-release-addr\0");
+    pub const CACHE_UNIFIED: &'static CStr = to_c_str(b"cache-unified\0");
+    pub const NEXT_LEVEL_CACHE: &'static CStr = to_c_str(b"next-level-cache\0");
+    pub const ENABLE_METHOD: &'static CStr = to_c_str(b"enable-method\0");
 }
 
 // const RESERVED_MEMORY_NODE: &'static NameRef
@@ -93,7 +91,7 @@ pub(crate) struct Node<'a> {
     pub(crate) model: Option<Model>,
     pub(crate) reg: Option<Box<[(u64, u64)]>>,
     pub(crate) ranges: Option<Box<[Range]>>,
-    pub(crate) status: Status,
+    pub(crate) status: Status<'a>,
     pub(crate) other: Map<Box<CStr>, Box<[u32]>>,
 }
 
@@ -240,7 +238,7 @@ pub struct RootNode<'a> {
     // higher_caches: HashMap<u32, Rc<HigherLevelCache>>,
     // reserved_memory: HashMap<Box<CStr>, ReservedMemoryNode>,
     // memory: Box<[MemoryRegion]>,
-    pub cpus: Map<u32, Rc<CpuNode<'a>>>,
+    pub cpus: Map<u32, Rc<cpu::Node<'a>>>,
     pub node: Node<'a>,
 }
 
@@ -281,15 +279,7 @@ impl<'a> TryFrom<RawNode<'a>> for RootNode<'a> {
                 });
 
         let (address_cells, size_cells) = value.extract_cell_counts();
-        println!("kds {:?}", value.children);
 
-        println!(
-            "is eq {:?}",
-            &NameRef::try_from(b"cpus".as_slice())
-                .unwrap()
-                .cmp(&NameRef::try_from(b"cpus".as_slice()).unwrap())
-        );
-        value.children.p_keys();
         let mut cpus_root = value
             .children
             .remove(&NameRef::try_from(b"cpus".as_slice()).unwrap())
@@ -320,7 +310,7 @@ impl<'a> TryFrom<RawNode<'a>> for RootNode<'a> {
                 .starts_with(<&NameSlice>::try_from(b"cpu".as_slice()).unwrap())
         });
 
-        let cpus = cpu_bases
+        let cpus: Map<_, _> = cpu_bases
             .map(|(name, node)| {
                 (
                     u32::from_str_radix(
@@ -331,11 +321,19 @@ impl<'a> TryFrom<RawNode<'a>> for RootNode<'a> {
                     )
                     .unwrap(),
                     Rc::new(
-                        CpuNode::new(node, &cpus_root.properties, &caches, cpu_addr_cells).unwrap(),
+                        cpu::Node::new(
+                            node,
+                            &cpus_root.properties,
+                            &caches,
+                            NonZeroU8::new(u8::try_from(cpu_addr_cells).unwrap()).unwrap(),
+                        )
+                        .unwrap(),
                     ),
                 )
             })
             .collect();
+
+        assert!(cpus.iter().all(|(id, node)| node.reg == u32::from(*id)));
         // caches.shrink_to_fit();
 
         // let rmem = value

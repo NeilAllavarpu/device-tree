@@ -2,7 +2,7 @@
 //!
 //! This module parses the device tree blob from memory and converts it into a convenient Rust object, on which you can call various methods to query the device tree
 
-use crate::node::CpuNode;
+use crate::node::cpu;
 use crate::{
     map::Map, node::RawNode, node::RootNode, node_name::NameRef, parse::U32ByteSlice,
     property::to_c_str,
@@ -64,7 +64,7 @@ pub struct DeviceTree<'a> {
     stdout_path: Option<Box<str>>,
     stdin_path: Option<Box<str>>,
     last_compatible_version: u32,
-    boot_cpu: Rc<CpuNode<'a>>,
+    boot_cpu: Rc<cpu::Node<'a>>,
 }
 
 impl<'a> DeviceTree<'a> {
@@ -267,7 +267,6 @@ impl<'a> DeviceTree<'a> {
                         return Err(DeviceTreeError::EoF);
                     }
 
-                    root.children.p_keys();
                     let aliases_node = root.children.remove(&Self::aliases()).unwrap();
                     // let aliases = aliases_node
                     //     .properties
@@ -366,12 +365,11 @@ impl<'a> DeviceTree<'a> {
         &self.root
     }
 
-    pub fn cpus(&self) -> &Map<u32, Rc<CpuNode>> {
+    pub fn cpus(&self) -> &Map<u32, Rc<cpu::Node>> {
         &self.root.cpus
     }
 
-    pub fn boot_cpu(&self) -> Rc<CpuNode> {
-        // print
+    pub fn boot_cpu(&self) -> Rc<cpu::Node> {
         self.boot_cpu.clone()
     }
 }

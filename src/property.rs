@@ -3,10 +3,11 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::fmt::Debug;
 
-use std::{collections::HashMap, ffi::CStr};
+use core::ffi::CStr;
 
 use crate::{
     map::Map,
+    node::PropertyKeys,
     parse::{self, ParseStrError, U32ByteSlice},
 };
 
@@ -164,65 +165,95 @@ impl TryFrom<&[u8]> for U64 {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Status {
+pub(crate) enum Status<'a> {
     Ok,
     Disabled,
     Reserved,
-    Fail(Box<str>),
+    Fail(&'a [u8]),
 }
 
-impl TryFrom<&[u8]> for Status {
-    type Error = ();
+impl<'a> TryFrom<&'a [u8]> for Status<'a> {
+    type Error = &'a [u8];
 
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        match parse::parse_str(value) {
-            Ok(string) => {
-                if let Some(code) = string.strip_prefix("fail") {
-                    Ok(Self::Fail(code.into()))
-                } else {
-                    match string {
-                        "okay" => Ok(Self::Ok),
-                        "disabled" => Ok(Self::Disabled),
-                        "reserved" => Ok(Self::Reserved),
-                        "fail" => unreachable!(),
-                        _ => Err(()),
-                    }
-                }
-            }
-            Err(_) => Err(()),
-        }
+    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+        CStr::from_bytes_until_nul(value).map_or(Err(value), |string| {
+            let string = string.to_bytes();
+            string.strip_prefix(b"fail").map_or_else(
+                || match string {
+                    b"okay" => Ok(Self::Ok),
+                    b"disabled" => Ok(Self::Disabled),
+                    b"reserved" => Ok(Self::Reserved),
+                    b"fail" => unreachable!("Any prefix of 'fail' should already be removed"),
+                    other => Err(other),
+                },
+                |code| Ok(Self::Fail(code)),
+            )
+        })
     }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum EnableType {
+pub enum EnableType<'a> {
     SpinTable(u64),
-    VendorSpecific(Box<str>, Box<str>),
+    VendorSpecific(&'a [u8], &'a [u8]),
 }
 
-impl TryFrom<&[u8]> for EnableType {
-    type Error = ();
+pub enum EnableTypeError {
+    NotPresent,
+    NoReleaseAddr,
+    Invalid,
+}
 
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        match parse::parse_str(value) {
-            Ok(string) => {
-                if string == "spin-table" {
-                    Ok(Self::SpinTable(0))
-                } else {
-                    let mut chunks = string.split(',');
-                    let vendor = chunks.next().ok_or(())?;
-                    let method = chunks.next().ok_or(())?;
+impl<'prop> EnableType<'prop> {
+    /// Extracts and parses `EnableType` from a map of properties, returning the type if valid
+    pub(crate) fn extract_from_properties(
+        properties: &mut Map<&'prop CStr, U32ByteSlice<'prop>>,
+    ) -> Result<Self, EnableTypeError> {
+        properties
+            .remove(&PropertyKeys::ENABLE_METHOD)
+            .ok_or(EnableTypeError::NotPresent)
+            .and_then(|bytes| <&CStr>::try_from(bytes).map_err(|_| EnableTypeError::Invalid))
+            .and_then(|method| match method.to_bytes() {
+                b"spin-table" => Ok(EnableType::SpinTable(
+                    properties
+                        .remove(&PropertyKeys::CPU_RELEASE_ADDR)
+                        .ok_or(EnableTypeError::NoReleaseAddr)?
+                        .try_into()
+                        .map_err(|_err| EnableTypeError::NoReleaseAddr)?,
+                )),
+                string => {
+                    let mut chunks = string.split(|&character| character == b',');
+                    let vendor = chunks.next().ok_or(EnableTypeError::Invalid)?;
+                    let vendor_method = chunks.next().ok_or(EnableTypeError::Invalid)?;
                     if chunks.next().is_some() {
-                        Err(())
+                        Err(EnableTypeError::Invalid)
                     } else {
-                        Ok(Self::VendorSpecific(vendor.into(), method.into()))
+                        Ok(Self::VendorSpecific(vendor, vendor_method))
                     }
                 }
-            }
-            Err(_) => Err(()),
-        }
+            })
     }
 }
+// impl TryFrom<&CStr> for EnableType<'_> {
+//     type Error = ();
+
+//     fn try_from(value: &CStr) -> Result<Self, Self::Error> {
+//         let value = value.to_bytes();
+
+//         if value == b"spin-table" {
+//             Ok(Self::SpinTable(0))
+//         } else {
+//             let mut chunks = string.split(',');
+//             let vendor = chunks.next().ok_or(())?;
+//             let method = chunks.next().ok_or(())?;
+//             if chunks.next().is_some() {
+//                 Err(())
+//             } else {
+//                 Ok(Self::VendorSpecific(vendor.into(), method.into()))
+//             }
+//         }
+//     }
+// }
 
 // type PHandle<'a, A: Allocator> = &'a Node<'a, A>;
 
@@ -273,9 +304,9 @@ pub enum Property {
     /// The device_type property was used in IEEE 1275 to describe the device’s FCode programming model. Because DTSpec does not have FCode, new use of the property is deprecated, and it should be included only on cpu and memory nodes for compatibility with IEEE 1275–derived devicetrees.
     DeviceType(String),
     /// The status property indicates the operational status of a device. The lack of a status property should be treated as if the property existed with the value of "okay".
-    Status(Status),
+    // Status(Status),
     /// Describes the method by which a CPU in a disabled state is enabled. This property is required for CPUs with a status property with a value of "disabled". The value consists of one or more strings that define the method to release this CPU. If a client program recognizes any of the methods, it may use it.
-    EnableMethod(EnableType),
+    // EnableMethod(EnableType),
     /// The cpu-release-addr property is required for cpu nodes that have an enable-method property value of "spin-table". The value specifies the physical address of a spin table entry that releases a secondary CPU from its spin loop.
     ReleaseAddr(U64),
     RegRaw(Box<[u8]>),
@@ -314,8 +345,8 @@ impl Property {
             "serial-number" => Self::SerialNumber,
             "bootargs" => Self::BootArgs,
             "device_type" => Self::DeviceType,
-            "status" => Self::Status,
-            "enable-method" => Self::EnableMethod,
+            // "status" => Self::Status,
+            // "enable-method" => Self::EnableMethod,
             "interrupt-parent" => Self::InterruptParent,
             "cpu-release-addr" => Self::ReleaseAddr
         )
