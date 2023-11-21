@@ -1,4 +1,5 @@
-use super::{parse_cells, PropertyKeys, RawNode};
+//! Types to describe the physical memory present on a device, as specified under the root node of the Device Tree
+use super::{PropertyKeys, RawNode};
 use crate::{map::Map, node_name::NameRef, parse::U32ByteSlice};
 use core::{ffi::CStr, num::NonZeroU32};
 
@@ -17,6 +18,7 @@ pub struct InitialMappedArea {
 impl TryFrom<U32ByteSlice<'_>> for InitialMappedArea {
     type Error = ();
 
+    #[inline]
     fn try_from(mut value: U32ByteSlice) -> Result<Self, Self::Error> {
         Ok(Self {
             effective_address: value.consume_u64().ok_or(())?,
@@ -40,6 +42,7 @@ pub struct MemoryRegion<'node> {
 }
 
 /// Errors from parsing a memory region
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum Error {
     /// The type of the memory region was not "memory"
@@ -52,7 +55,7 @@ pub enum Error {
 
 impl<'node> MemoryRegion<'node> {
     /// Parses a memory node into a list of memory ranges with attributes
-    pub fn new(
+    pub(crate) fn new(
         mut node: RawNode<'node>,
         name: &NameRef<'node>,
         address_cells: u8,
@@ -80,7 +83,9 @@ impl<'node> MemoryRegion<'node> {
         let mut memory = Vec::new();
 
         while !bytes.is_empty() {
-            let (start, size) = parse_cells(&mut bytes, address_cells, size_cells);
+            let start = bytes.consume_cells(address_cells).ok_or(Error::Reg)?;
+            let size = bytes.consume_cells(size_cells).ok_or(Error::Reg)?;
+
             if name.unit_address().is_some_and(|address| address != start) {
                 return Err(Error::Reg);
             }

@@ -1,13 +1,20 @@
-use super::RawNode;
-use crate::{
-    node::{parse_cells, PropertyKeys},
-    split_at_first,
-};
+//! Types to describe regions of memory that are reserved and must be handled specially by the OS or other programs
+//!
+//! This is different from the memory reservations described in the DTB that are not part of the device tree directly
+
+use super::{DeviceNode, RawNode, RawNodeError};
+use crate::map::Map;
+use crate::node_name::NameRef;
+use crate::parse::U32ByteSlice;
+use crate::{node::PropertyKeys, split_at_first};
 use core::{ffi::CStr, num::NonZeroU8};
 use core::{fmt, str};
 
-// #[derive(Debug)]
 /// Additional information regarding the usage intent of a given reserved region of memory
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "These are the only possible variants as specified by the Device Tree spec"
+)]
 pub enum Compatible<'bytes> {
     /// This indicates a region of memory meant to be used as a shared pool of DMA buffers for a set of devices.
     /// It can be used by an operating system to instantiate the necessary pool management subsystem if necessary.
@@ -17,6 +24,7 @@ pub enum Compatible<'bytes> {
 }
 
 impl fmt::Debug for Compatible<'_> {
+    #[inline]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::SharedDmaPool => write!(formatter, "SharedDmaPool"),
@@ -48,6 +56,7 @@ impl fmt::Debug for Compatible<'_> {
 impl<'bytes> TryFrom<&'bytes CStr> for Compatible<'bytes> {
     type Error = ();
 
+    #[inline]
     fn try_from(value: &'bytes CStr) -> Result<Self, Self::Error> {
         let bytes = value.to_bytes();
         if bytes == b"shared-dma-pool" {
@@ -64,6 +73,10 @@ impl<'bytes> TryFrom<&'bytes CStr> for Compatible<'bytes> {
 
 /// Describes the limitations for a region of reserved memory
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "These are the only possible variants as specified by the Device Tree spec"
+)]
 pub enum Usage {
     /// Indicates the operating system must not create a virtual mapping of the region as part of its standard mapping of system memory,
     /// nor permit speculative access to it under any circumstances other than under the control of the device driver using the region.
@@ -77,6 +90,10 @@ pub enum Usage {
 
 #[derive(Debug)]
 /// A reserved memory node requires either a `reg` property for static allocations, or a `size` property for dynamics allocations. If both reg and size are present, then the region is treated as a static allocation with the `reg` property taking precedence and `size` is ignored.
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "These are the only possible variants as specified by the Device Tree spec"
+)]
 pub enum Range {
     /// Consists of an arbitrary number of address and size pairs that specify the physical address and size of the memory ranges.
     Static(Box<[(u64, u64)]>),
@@ -96,21 +113,26 @@ pub struct Node<'node> {
     usage: Usage,
     /// Additional information about the usage of this memory
     compatible: Option<Compatible<'node>>,
-    /// Other miscellaneous features
-    node: super::Node<'node>,
+    /// Other miscellaneous properties
+    properties: Map<&'node CStr, U32ByteSlice<'node>>,
+    /// Any children, if present
+    children: Map<NameRef<'node>, DeviceNode<'node>>,
 }
 
 /// Errors that can occur when parsing a reserved memory node
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// Error parsing either the static or dynamic allocation
     InvalidMemory,
     /// Error parsing the usage: both `no_map` and `reusable` were specified
     Usage,
-    /// Invalid size cells provided while attempting to parse
-    SizeCells,
+    /// Invalid  cells provided while attempting to parse
+    Cells,
     /// Error parsing the compatibility field
     Compatible,
+    /// Error parsing a child
+    Child(super::Error),
 }
 
 impl<'node> Node<'node> {
@@ -135,7 +157,7 @@ impl<'node> Node<'node> {
             .properties
             .remove(PropertyKeys::ALIGNMENT)
             .map(|bytes| match size_cells.get() {
-                0 => Err(Error::SizeCells),
+                0 => Err(Error::Cells),
                 1 => u32::try_from(bytes)
                     .map_err(|_err| Error::InvalidMemory)
                     .map(u64::from),
@@ -144,13 +166,20 @@ impl<'node> Node<'node> {
             })
             .transpose()?;
 
-        let regs = value.properties.remove(PropertyKeys::REG).map(|mut reg| {
-            let mut regs = Vec::new();
-            while !reg.is_empty() {
-                regs.push(parse_cells(&mut reg, address_cells, size_cells.get()));
-            }
-            regs.into_boxed_slice()
-        });
+        let regs = value
+            .properties
+            .remove(PropertyKeys::REG)
+            .map(|mut reg| {
+                let mut regs = Vec::new();
+                while !reg.is_empty() {
+                    regs.push((
+                        reg.consume_cells(address_cells).ok_or(Error::Cells)?,
+                        reg.consume_cells(size_cells.get()).ok_or(Error::Cells)?,
+                    ));
+                }
+                Ok(regs.into_boxed_slice())
+            })
+            .transpose()?;
 
         let no_map = value.properties.remove(PropertyKeys::NO_MAP).is_some();
         let reusable = value.properties.remove(PropertyKeys::REUSABLE).is_some();
@@ -165,11 +194,33 @@ impl<'node> Node<'node> {
             .map(|mut ranges| {
                 let mut reg = Vec::new();
                 while !ranges.is_empty() {
-                    reg.push(parse_cells(&mut ranges, address_cells, size_cells.get()));
+                    reg.push((
+                        ranges.consume_cells(address_cells).ok_or(Error::Cells)?,
+                        ranges.consume_cells(size_cells.get()).ok_or(Error::Cells)?,
+                    ));
                 }
                 reg.sort_unstable_by_key(|&(start, _)| start);
-                reg.into_boxed_slice()
-            });
+                Ok(reg.into_boxed_slice())
+            })
+            .transpose()?;
+
+        let compatible = value
+            .properties
+            .remove(PropertyKeys::COMPATIBLE)
+            .map(|bytes| {
+                <&CStr>::try_from(bytes)
+                    .ok()
+                    .and_then(|x| Compatible::try_from(x).ok())
+                    .ok_or(Error::Compatible)
+            })
+            .transpose()?;
+
+        let (properties, children) = value.into_components();
+        let children = match children {
+            Ok(children) => children,
+            Err(RawNodeError::Cells) => return Err(Error::Cells),
+            Err(RawNodeError::Child(child)) => return Err(Error::Child(child)),
+        };
 
         Ok(Self {
             memory: regs.map_or_else(
@@ -179,16 +230,7 @@ impl<'node> Node<'node> {
                 },
                 |static_regs| Ok(Range::Static(static_regs)),
             )?,
-            compatible: value
-                .properties
-                .remove(PropertyKeys::COMPATIBLE)
-                .map(|bytes| {
-                    <&CStr>::try_from(bytes)
-                        .ok()
-                        .and_then(|x| Compatible::try_from(x).ok())
-                        .ok_or(Error::Compatible)
-                })
-                .transpose()?,
+            compatible,
             usage: if no_map {
                 Usage::NoMap
             } else if reusable {
@@ -196,7 +238,8 @@ impl<'node> Node<'node> {
             } else {
                 Usage::Other
             },
-            node: super::Node::new(value, Some(address_cells), Some(size_cells.get())),
+            properties,
+            children,
         })
     }
 }

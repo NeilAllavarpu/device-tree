@@ -1,8 +1,14 @@
-use super::{cache::HigherLevel, cpu, memory_region, reserved_memory, ChassisType, RawNode};
+//! The root node of the device tree. All nodes are descendants of this.
+
+use super::{
+    cache::HigherLevel, cpu, memory_region, reserved_memory, ChassisType, DeviceNode, RawNode,
+    RawNodeError,
+};
 use crate::{
     map::Map,
     node::{memory_region::MemoryRegion, CellError, PropertyKeys},
     node_name::{NameRef, NameSlice},
+    parse::U32ByteSlice,
     property::{parse_model_list, Model},
 };
 use alloc::rc::Rc;
@@ -45,11 +51,13 @@ pub struct Node<'node> {
     /// Child cpu nodes which represent the system's CPUs.
     pub cpus: Map<u32, Rc<cpu::Node<'node>>>,
     /// The remainder of this node
-    pub node: super::Node<'node>,
+    properties: Map<&'node CStr, U32ByteSlice<'node>>,
+    children: Map<NameRef<'node>, DeviceNode<'node>>,
 }
 
 /// Errors from parsing a root node
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum NodeError {
     /// The model is missing or invalid
     Model,
@@ -75,6 +83,7 @@ pub enum NodeError {
     Memory(memory_region::Error),
     /// The type of a node was invalid
     Type,
+    Child(super::Error),
 }
 
 /// "Constants" for various node names
@@ -104,6 +113,8 @@ impl NodeNames {
 impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
     type Error = NodeError;
 
+    #[inline]
+    #[allow(clippy::too_many_lines)]
     fn try_from(mut value: RawNode<'node>) -> Result<Self, Self::Error> {
         let model = value
             .properties
@@ -171,8 +182,6 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             })
             .try_collect()?;
 
-        // caches.shrink_to_fit();
-
         let mut reserved_memory_root = value
             .children
             .remove(&NodeNames::reserved_memory())
@@ -211,6 +220,13 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             })
             .try_collect()?;
 
+        let (properties, children) = value.into_components();
+        let children = match children {
+            Ok(children) => children,
+            Err(RawNodeError::Cells) => return Err(NodeError::Cells(CellError::Invalid)),
+            Err(RawNodeError::Child(child)) => return Err(NodeError::Child(child)),
+        };
+
         Ok(Self {
             model,
             compatible,
@@ -220,7 +236,8 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             memory,
             reserved_memory,
             higher_caches: caches,
-            node: super::Node::new(value, Some(address_cells), Some(size_cells.get())),
+            properties,
+            children,
         })
     }
 }

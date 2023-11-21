@@ -1,6 +1,6 @@
 use crate::map::Map;
 use crate::node_name::NameRef;
-use crate::node_name::NameSlice;
+
 use crate::parse::U32ByteSlice;
 use crate::property::parse_model_list;
 use crate::property::to_c_str;
@@ -8,11 +8,7 @@ use crate::property::Model;
 use crate::property::Range;
 use crate::property::Status;
 use alloc::boxed::Box;
-use alloc::rc::Rc;
-use core::ascii;
 use core::ffi::CStr;
-use core::num::NonZeroU32;
-use core::num::NonZeroU8;
 
 pub mod cache;
 pub mod cpu;
@@ -20,13 +16,8 @@ pub mod memory_region;
 pub mod reserved_memory;
 pub mod root;
 
-/// A Device Tree Node
-#[derive(Debug)]
-pub(crate) struct RawNode<'a> {
-    pub(crate) children: Map<NameRef<'a>, RawNode<'a>>,
-    pub(crate) properties: Map<&'a CStr, U32ByteSlice<'a>>,
-}
-
+/// Namespace of constants for various property keys to look up
+#[expect(clippy::exhaustive_structs, reason = "No fields exported")]
 pub struct PropertyKeys;
 
 impl PropertyKeys {
@@ -55,19 +46,33 @@ impl PropertyKeys {
     pub const ENABLE_METHOD: &'static CStr = to_c_str(b"enable-method\0");
 }
 
-// const RESERVED_MEMORY_NODE: &'static NameRef
+/// A Device Tree Node
+#[derive(Debug)]
+pub(crate) struct RawNode<'node> {
+    pub(crate) children: Map<NameRef<'node>, RawNode<'node>>,
+    pub(crate) properties: Map<&'node CStr, U32ByteSlice<'node>>,
+}
 
-#[derive(Debug, Clone)]
+/// Errors from parsing the address and size cell count properties of a node
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum CellError {
+    /// Cell field was not present as a property
     NotPresent,
+    /// Cell field was not a valid `u32`
     Invalid,
 }
 
-impl<'a> RawNode<'a> {
+pub enum RawNodeError {
+    Cells,
+    Child(Error),
+}
+
+impl<'node> RawNode<'node> {
     /// Creates a node with the given name, children, and properties
     pub(crate) fn new(
-        children: impl IntoIterator<Item = (NameRef<'a>, Self)>,
-        properties: Map<&'a CStr, U32ByteSlice<'a>>,
+        children: impl IntoIterator<Item = (NameRef<'node>, Self)>,
+        properties: Map<&'node CStr, U32ByteSlice<'node>>,
     ) -> Self {
         Self {
             children: children.into_iter().collect(),
@@ -75,7 +80,7 @@ impl<'a> RawNode<'a> {
         }
     }
 
-    /// Returns the address and size cells of this, if present
+    /// Removes and returns the address and size cells of this node, if present
     fn extract_cell_counts(&mut self) -> (Result<u8, CellError>, Result<u8, CellError>) {
         /// Type-proper function to consume a byte slice into a single u32
         fn parse_cells(bytes: U32ByteSlice<'_>) -> Result<u8, CellError> {
@@ -93,143 +98,140 @@ impl<'a> RawNode<'a> {
                 .map_or(Ok(1), parse_cells),
         )
     }
+
+    /// Decomposes this raw node into a parsed map of `DeviceNode` children and map of properties.
+    ///
+    /// Error conditions indicate any errors with parsing some child of the node
+    fn into_components(
+        mut self,
+    ) -> (
+        Map<&'node CStr, U32ByteSlice<'node>>,
+        Result<Map<NameRef<'node>, DeviceNode<'node>>, RawNodeError>,
+    ) {
+        let (child_addr_cells, child_size_cells) = self.extract_cell_counts();
+        (
+            self.properties,
+            if matches!(child_addr_cells, Err(CellError::Invalid))
+                || matches!(child_size_cells, Err(CellError::Invalid))
+            {
+                Err(RawNodeError::Cells)
+            } else {
+                self.children
+                    .into_iter()
+                    .map(|(name, raw_node)| {
+                        DeviceNode::new(raw_node, child_addr_cells.ok(), child_size_cells.ok())
+                            .map(|device_node| (name, device_node))
+                    })
+                    .try_collect()
+                    .map_err(RawNodeError::Child)
+            },
+        )
+    }
+}
+
+pub trait Node {
+    fn properties(&self) -> &Map<&CStr, U32ByteSlice>;
+    fn children(&self) -> &Map<NameRef, &DeviceNode>;
 }
 
 /// A Device Tree Node
 #[derive(Debug)]
-pub(crate) struct Node<'a> {
-    pub(crate) children: Map<NameRef<'a>, Rc<Node<'a>>>,
+pub struct DeviceNode<'node> {
+    /// Children
+    pub(crate) children: Map<NameRef<'node>, DeviceNode<'node>>,
     pub(crate) compatible: Option<Box<[Model]>>,
     pub(crate) model: Option<Model>,
-    pub(crate) reg: Option<Box<[(u64, u64)]>>,
+    pub(crate) reg: Option<Box<[[u64; 2]]>>,
     pub(crate) ranges: Option<Box<[Range]>>,
-    pub(crate) status: Status<'a>,
-    pub(crate) other: Map<Box<CStr>, Box<[u32]>>,
+    pub(crate) status: Status<'node>,
+    pub(crate) properties: Map<&'node CStr, U32ByteSlice<'node>>,
 }
 
-fn parse_cells(bytes: &mut U32ByteSlice<'_>, address_cells: u8, size_cells: u8) -> (u64, u64) {
-    let address = match address_cells {
-        0 => unreachable!("Address cells should never be 0"),
-        1 => bytes.consume_u32().map(u64::from),
-        2 => bytes.consume_u64(),
-        count => {
-            let value = bytes.consume_u64();
-            for _ in 2..count {
-                if bytes.consume_u32() != Some(0) {
-                    println!("Cannot handle address cell count {address_cells}");
-                }
-            }
-            value
-        }
-    }
-    .unwrap();
-
-    let length = match size_cells {
-        0 => Some(0),
-        1 => bytes.consume_u32().map(u64::from),
-        2 => bytes.consume_u64(),
-        _ => unimplemented!("Cannot handle size cell count {size_cells}"),
-    }
-    .unwrap();
-
-    (address, length)
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum Error {
+    Reg,
+    Compatible,
+    Model,
+    Ranges,
+    Status,
+    Cells,
+    Child(Box<Error>),
 }
 
-impl<'a> Node<'a> {
-    fn new(mut value: RawNode<'a>, address_cells: Option<u8>, size_cells: Option<u8>) -> Self {
+impl<'node> DeviceNode<'node> {
+    ///c
+    fn new(
+        mut value: RawNode<'node>,
+        address_cells: Option<u8>,
+        size_cells: Option<u8>,
+    ) -> Result<Self, Error> {
         let (child_address_cells, child_size_cells) = value.extract_cell_counts();
-        // let (child_address_cells, child_size_cells) =
-        //     (child_address_cells.unwrap(), child_size_cells.unwrap());
-        println!("node {value:#?}");
+        let reg = value
+            .properties
+            .remove(&PropertyKeys::REG)
+            .map(|bytes| {
+                address_cells
+                    .zip(size_cells)
+                    .and_then(|cells| bytes.into_cells_slice(&cells.into()))
+                    .ok_or(Error::Reg)
+            })
+            .transpose()?;
+        let compatible = value
+            .properties
+            .remove(&PropertyKeys::COMPATIBLE)
+            .map(|bytes| parse_model_list(bytes.into()).map_err(|_err| Error::Compatible))
+            .transpose()?;
+        let model = value
+            .properties
+            .remove(&PropertyKeys::MODEL)
+            .map(|bytes| Model::try_from(<&[u8]>::from(bytes)).map_err(|_| Error::Model))
+            .transpose()?;
 
-        Self {
-            reg: value.properties.remove(&PropertyKeys::REG).map(|mut bytes| {
-                let mut reg_list = Vec::with_capacity(
-                    bytes.len() / usize::try_from(address_cells.unwrap() + size_cells.unwrap()).unwrap(),
-                );
-                while !bytes.is_empty() {
-                    reg_list.push(parse_cells(&mut bytes, address_cells.unwrap(), size_cells.unwrap()))
-                }
-                reg_list.into_boxed_slice()
-            }),
-            compatible: value.properties.remove(&PropertyKeys::COMPATIBLE).map(|bytes| {
-                parse_model_list(bytes.into()).unwrap()
-                // let mut compatible_list = Vec::new();
-                // let slice = <&[u8]>::from(bytes);
-                // while !slice.is_empty() {
-                //     let c_str = CStr::from_bytes_with_nul(slice).unwrap();
-                //     compatible_list.push(Model::try_from(c_str.try_into().unwrap()).unwrap());
-                //     slice.take(..c_str.len())
-                // }
-                // compatible_list.into_boxed_slice()
-            }),
-            model: value
-                .properties
-                .remove(&PropertyKeys::MODEL)
-                .map(|bytes| Model::try_from(<&[u8]>::from(bytes)).unwrap()),
-            ranges: value.properties.remove(&PropertyKeys::RANGES).map(|mut bytes| {
-                let mut range_list = Vec::with_capacity(
-                    bytes.len()
-                        / usize::try_from(address_cells.unwrap() + size_cells.unwrap() + child_size_cells.clone().unwrap()).unwrap(),
-                );
-                while !bytes.is_empty() {
-                    range_list.push(Range {
-                        child_address: match child_address_cells.clone() {
-                            Ok(0) => unreachable!("Address cells should never be 0"),
-                            Ok(1) => bytes.consume_u32().map(u64::from),
-                            Ok(2) => bytes.consume_u64(),
-                            count => {
-                                let v = bytes.consume_u64();
-                                for _ in 2..count.unwrap() {
-                                    if let Some(extra) = bytes.consume_u32() && extra != 0 {
-                                        eprintln!(
-                                            "Cannot handle address cell count {child_address_cells:?}: 0x{extra:X}"
-                                        );
-                                    }
-                                }
-                                v
-                            }
-                        }
-                        .unwrap(),
-                        parent_address: match address_cells.unwrap() {
-                            0 => unreachable!("Address cells should never be 0"),
-                            1 => bytes.consume_u32().map(u64::from),
-                            2 => bytes.consume_u64(),
-                            _ => unimplemented!("Cannot handle address cell count {address_cells:?}"),
-                        }
-                        .unwrap(),
-                        size: match child_size_cells.clone() {
-                            Ok(0) => unreachable!("Size of a range should never be 0"),
-                            Ok(1) => bytes.consume_u32().map(u64::from),
-                            Ok(2) => bytes.consume_u64(),
-                            _ => unimplemented!("Cannot handle address cell count {address_cells:?}"),
-                        }
-                        .unwrap(),
+        let ranges = value
+            .properties
+            .remove(&PropertyKeys::RANGES)
+            .map(|bytes| {
+                child_address_cells
+                    .ok()
+                    .zip(address_cells)
+                    .zip(child_size_cells.ok())
+                    .and_then(|((child_address_cells, address_cells), child_size_cells)| {
+                        bytes
+                            .into_cells_slice(&[
+                                child_address_cells,
+                                address_cells,
+                                child_size_cells,
+                            ])
+                            .map(|entries| {
+                                entries.iter().map(|&range| Range::from(range)).collect()
+                            })
                     })
-                }
-                range_list.into_boxed_slice()
-            }),
-            status: value
-                .properties
-                .remove(&PropertyKeys::STATUS)
-                .map(|mut bytes| Status::try_from(<&[u8]>::from(bytes)).unwrap())
-                .unwrap_or(Status::Ok),
-            other: value
-                .properties
-                .into_iter()
-                .map(|(label, bytes)| (label.into(), <&[u32]>::from(bytes).into()))
-                .collect(),
-                children: value
-                    .children
-                    .into_iter()
-                    .map(|(name, raw_node)| {
-                        (
-                            name,
-                            Rc::new(Node::new(raw_node, child_address_cells.clone().ok(), child_size_cells.clone().ok())),
-                        )
-                    })
-                    .collect(),
-        }
+                    .ok_or(Error::Ranges)
+            })
+            .transpose()?;
+        let status = value
+            .properties
+            .remove(&PropertyKeys::STATUS)
+            .map_or(Ok(Status::Ok), |bytes| {
+                Status::try_from(<&[u8]>::from(bytes)).map_err(|_err| Error::Status)
+            })?;
+
+        let (properties, children) = value.into_components();
+        let children = match children {
+            Ok(children) => children,
+            Err(RawNodeError::Cells) => return Err(Error::Cells),
+            Err(RawNodeError::Child(child)) => return Err(Error::Child(Box::new(child))),
+        };
+        Ok(Self {
+            children,
+            compatible,
+            model,
+            reg,
+            ranges,
+            status,
+            properties,
+        })
     }
 }
 

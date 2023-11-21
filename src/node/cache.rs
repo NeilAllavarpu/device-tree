@@ -1,5 +1,9 @@
-use super::RawNode;
-use crate::{map::Map, node::PropertyKeys, parse::U32ByteSlice};
+//! Types for describing caches
+//!
+//! The device tree provides information as caches both as a part of CPU nodes (for L1 caches) or as independent nodes (for higher caches)
+
+use super::{CellError, DeviceNode, RawNode, RawNodeError};
+use crate::{map::Map, node::PropertyKeys, node_name::NameRef, parse::U32ByteSlice};
 use core::{ffi::CStr, num::NonZeroU32};
 
 // TODO: Are these not actually required for a device tree to fully implement?
@@ -95,11 +99,14 @@ pub struct HigherLevel<'node> {
     cache: Description,
     /// Specifies the level in the cache hierarchy. For example, a level 2 cache has a value of 2.
     level: u32,
-    /// Other attributes for this cache
-    node: super::Node<'node>,
+    /// Children of this node
+    children: Map<NameRef<'node>, DeviceNode<'node>>,
+    /// Other miscellaneous properties
+    properties: Map<&'node CStr, U32ByteSlice<'node>>,
 }
 
 /// Errors from parsing a node into a `HigherLevel` Cache
+#[non_exhaustive]
 pub enum HigherLevelError {
     /// The compatible field of the node is either missing or not equal to `"cache"`
     BadType,
@@ -107,11 +114,14 @@ pub enum HigherLevelError {
     PHandle,
     /// The level of the cache is either missing or malformed
     Level,
+    /// Error parsing the cells of this node, if present
+    Cells,
+    /// Error parsing a child node
+    Child(super::Error),
 }
 
 impl<'node> HigherLevel<'node> {
     /// Creates a new higher-level cache from the given device tree node
-
     pub(super) fn new(
         mut value: RawNode<'node>,
         address_cells: u8,
@@ -130,16 +140,34 @@ impl<'node> HigherLevel<'node> {
             .remove(&PropertyKeys::PHANDLE)
             .and_then(|x| x.try_into().ok())
             .ok_or(HigherLevelError::PHandle)?;
+
+        let (child_addr_cells, child_size_cells) = value.extract_cell_counts();
+        if matches!(child_addr_cells, Err(CellError::Invalid))
+            || matches!(child_size_cells, Err(CellError::Invalid))
+        {
+            return Err(HigherLevelError::Cells);
+        }
+
+        let level = value
+            .properties
+            .remove(&PropertyKeys::CACHE_LEVEL)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(HigherLevelError::Level)?;
+        let cache = cache_description!(&mut value.properties, b"");
+
+        let (properties, children) = value.into_components();
+        let children = match children {
+            Ok(children) => children,
+            Err(RawNodeError::Cells) => return Err(HigherLevelError::Cells),
+            Err(RawNodeError::Child(child)) => return Err(HigherLevelError::Child(child)),
+        };
         Ok((
             phandle,
             Self {
-                cache: cache_description!(&mut value.properties, b""),
-                level: value
-                    .properties
-                    .remove(&PropertyKeys::CACHE_LEVEL)
-                    .and_then(|bytes| bytes.try_into().ok())
-                    .ok_or(HigherLevelError::Level)?,
-                node: super::Node::new(value, Some(address_cells), Some(0)),
+                cache,
+                level,
+                children,
+                properties,
             },
         ))
     }
@@ -149,13 +177,33 @@ impl<'node> HigherLevel<'node> {
 #[derive(Debug)]
 pub struct Harvard {
     /// The instruction cache description
-    pub icache: Description,
+    icache: Description,
     /// The data cache description
-    pub dcache: Description,
+    dcache: Description,
+}
+
+impl Harvard {
+    /// Returns the instruction cache description of this Harvard cache
+    #[must_use]
+    #[inline]
+    pub const fn dcache(&self) -> &Description {
+        &self.dcache
+    }
+
+    /// Returns the data cache description of this Harvard cache
+    #[must_use]
+    #[inline]
+    pub const fn icache(&self) -> &Description {
+        &self.icache
+    }
 }
 
 /// The L1 cache residing in a CPU
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "These are the only possible variants as specified by the Device Tree spec"
+)]
 pub enum L1 {
     /// The cache is unified for both data and instructions
     Unified(Description),
@@ -165,7 +213,7 @@ pub enum L1 {
 
 impl L1 {
     /// Extracts an L1 cache description from the properties of a CPU node
-    pub fn extract_from(properties: &mut Map<&CStr, U32ByteSlice>) -> Self {
+    pub(crate) fn extract_from(properties: &mut Map<&CStr, U32ByteSlice>) -> Self {
         if properties.remove(&PropertyKeys::CACHE_UNIFIED).is_some() {
             Self::Unified(cache_description!(properties, b""))
         } else {

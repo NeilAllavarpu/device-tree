@@ -33,6 +33,7 @@
 #![feature(ptr_metadata)]
 #![feature(ptr_from_ref)]
 #![feature(stmt_expr_attributes)]
+#![feature(iterator_try_reduce)]
 #![feature(extract_if)]
 #![feature(error_in_core)]
 #![feature(const_ptr_as_ref)]
@@ -47,18 +48,25 @@ extern crate alloc;
 pub mod dtb;
 mod map;
 mod memory_reservation;
-mod node;
+pub mod node;
 mod node_name;
 mod parse;
 mod property;
 
+/// Splits a slice at the first instance of the given value, returning the slice up to, but not including, said element, and the slice beginning immediately after.
+/// In other words, returns the two slices formed by introducing a "hole" at the first matching element
+///
+/// Returns `None` if the value is not present in the slice
 fn split_at_first<'slice, T: PartialEq>(
     slice: &'slice [T],
     value: &T,
 ) -> Option<(&'slice [T], &'slice [T])> {
     slice
-        .into_iter()
+        .iter()
         .enumerate()
         .find(|&(_, elem)| elem == value)
-        .map(|(index, _)| (&slice[..index], &slice[(index + 1)..]))
+        .map(|(index, _)| {
+            #[expect(clippy::indexing_slicing, reason = "This slicing should never panic since the index should always be less than the length of the slice")]
+            (&slice[..index], &slice[index.checked_add(1).expect("This resulting should always be at most the length of the slice")..])
+        })
 }

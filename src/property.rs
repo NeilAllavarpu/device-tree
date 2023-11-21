@@ -51,10 +51,20 @@ impl TryFrom<&[u8]> for Model {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Range {
+pub struct Range {
     pub(crate) child_address: u64,
     pub(crate) parent_address: u64,
     pub(crate) size: u64,
+}
+
+impl From<[u64; 3]> for Range {
+    fn from([child_address, parent_address, size]: [u64; 3]) -> Self {
+        Self {
+            child_address,
+            parent_address,
+            size,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]

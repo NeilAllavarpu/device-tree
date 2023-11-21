@@ -9,12 +9,13 @@ use alloc::rc::Rc;
 use core::{ffi::CStr, num::NonZeroU8};
 
 use super::{
-    cache::{Description, Harvard, HigherLevel, L1},
+    cache::{HigherLevel, L1},
     PropertyKeys, RawNode,
 };
 
 /// Status of a CPU as indicated by the node
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Status {
     /// The CPU is running.
     Okay,
@@ -55,6 +56,7 @@ pub struct Node<'node> {
 
 /// Errors from attempting to parse a `CpuNode`
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum NodeError {
     /// Error parsing the device type, or the device type was not 0
     DeviceType,
