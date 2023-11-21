@@ -8,7 +8,10 @@ use crate::{
 use alloc::rc::Rc;
 use core::{ffi::CStr, num::NonZeroU8};
 
-use super::{cache_desc, Cache, HarvardCache, HigherLevelCache, PropertyKeys, RawNode};
+use super::{
+    cache::{Description, Harvard, HigherLevel, L1},
+    PropertyKeys, RawNode,
+};
 
 /// Status of a CPU as indicated by the node
 #[derive(Debug)]
@@ -41,11 +44,11 @@ pub struct Node<'node> {
     /// A unique identifier for this CPU
     pub(crate) reg: u32,
     /// The L1 cache for this CPU
-    l1_cache: Cache,
+    l1_cache: L1,
     /// The status of this CPU. If `Disabled`, can be enabled via the mechanism described by `enable_method`
     status: Status,
     /// The next level cache after L1 for this CPU, if present
-    next_cache: Option<Rc<HigherLevelCache<'node>>>,
+    next_cache: Option<Rc<HigherLevel<'node>>>,
     /// Miscellaneous other properties for this CPU
     properties: Map<&'node CStr, U32ByteSlice<'node>>,
 }
@@ -72,14 +75,14 @@ impl<'node> Node<'node> {
     pub(super) fn new<'parsing>(
         mut value: RawNode<'node>,
         base: &'parsing Map<&'node CStr, U32ByteSlice<'node>>,
-        cache_handles: &'parsing Map<u32, Rc<HigherLevelCache<'node>>>,
+        cache_handles: &'parsing Map<u32, Rc<HigherLevel<'node>>>,
         address_cells: NonZeroU8,
     ) -> Result<Self, NodeError> {
         value.properties.extend_preserve(base);
 
         if !value
             .properties
-            .remove(&PropertyKeys::DEVICE_TYPE)
+            .remove(PropertyKeys::DEVICE_TYPE)
             .is_some_and(|device_type| {
                 <&CStr>::try_from(device_type).is_ok_and(|x| x.to_bytes() == b"cpu")
             })
@@ -95,7 +98,7 @@ impl<'node> Node<'node> {
         };
 
         let status = {
-            let property = value.properties.remove(&PropertyKeys::STATUS);
+            let property = value.properties.remove(PropertyKeys::STATUS);
             if let Some(property) = property {
                 match <&CStr>::try_from(property).map(CStr::to_bytes) {
                     Ok(b"okay") => Status::Okay,
@@ -113,22 +116,11 @@ impl<'node> Node<'node> {
             }
         };
 
-        let cache = if value
-            .properties
-            .remove(&PropertyKeys::CACHE_UNIFIED)
-            .is_some()
-        {
-            Cache::Unified(cache_desc(&mut value.properties, ""))
-        } else {
-            Cache::Harvard(HarvardCache {
-                icache: cache_desc(&mut value.properties, "i-"),
-                dcache: cache_desc(&mut value.properties, "d-"),
-            })
-        };
+        let cache = L1::extract_from(&mut value.properties);
 
         let next_cache = value
             .properties
-            .remove(&PropertyKeys::NEXT_LEVEL_CACHE)
+            .remove(PropertyKeys::NEXT_LEVEL_CACHE)
             .map(|phandle| {
                 u32::try_from(phandle)
                     .ok()
@@ -139,7 +131,7 @@ impl<'node> Node<'node> {
 
         let reg = value
             .properties
-            .remove(&PropertyKeys::REG)
+            .remove(PropertyKeys::REG)
             .and_then(|bytes| {
                 if address_cells.get() != 1 {
                     unimplemented!("Only 32-bit CPU IDs are currently supported");

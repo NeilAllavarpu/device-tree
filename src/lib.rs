@@ -38,6 +38,7 @@
 #![feature(const_ptr_as_ref)]
 #![feature(pointer_is_aligned)]
 #![feature(slice_ptr_get)]
+#![feature(concat_bytes)]
 #![feature(slice_take)]
 #![feature(strict_provenance)]
 
@@ -50,3 +51,14 @@ mod node;
 mod node_name;
 mod parse;
 mod property;
+
+fn split_at_first<'slice, T: PartialEq>(
+    slice: &'slice [T],
+    value: &T,
+) -> Option<(&'slice [T], &'slice [T])> {
+    slice
+        .into_iter()
+        .enumerate()
+        .find(|&(_, elem)| elem == value)
+        .map(|(index, _)| (&slice[..index], &slice[(index + 1)..]))
+}

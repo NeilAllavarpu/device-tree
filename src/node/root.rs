@@ -1,7 +1,7 @@
-use super::{cpu, memory_region, reserved_memory, ChassisType, RawNode};
+use super::{cache::HigherLevel, cpu, memory_region, reserved_memory, ChassisType, RawNode};
 use crate::{
     map::Map,
-    node::{memory_region::MemoryRegion, CellError, HigherLevelCache, PropertyKeys},
+    node::{memory_region::MemoryRegion, CellError, PropertyKeys},
     node_name::{NameRef, NameSlice},
     property::{parse_model_list, Model},
 };
@@ -23,7 +23,8 @@ pub struct Node<'node> {
     serial_number: Option<&'node CStr>,
     /// Specifies a string that identifies the form-factor of the system.
     chassis_type: Option<ChassisType>,
-    higher_caches: Map<u32, Rc<HigherLevelCache<'node>>>,
+    /// Higher level caches present in the processor, beyond the L1
+    pub higher_caches: Map<u32, Rc<HigherLevel<'node>>>,
     /// Reserved memory is specified as a node under the /reserved-memory node.
     /// The operating system shall exclude reserved memory from normal usage.
     /// One can create child nodes describing particular reserved (excluded from normal use) memory regions.
@@ -106,7 +107,7 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
     fn try_from(mut value: RawNode<'node>) -> Result<Self, Self::Error> {
         let model = value
             .properties
-            .remove(&PropertyKeys::MODEL)
+            .remove(PropertyKeys::MODEL)
             .and_then(|x| Model::try_from(<&[u8]>::from(x)).ok())
             .ok_or(NodeError::Model)?;
 
@@ -145,9 +146,9 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             .children
             .extract_if(|name, _| !name.node_name().starts_with(NodeNames::cpu_prefix()))
             .map(|(_, node)| {
-                HigherLevelCache::new(node, cpu_addr_cells.get())
+                HigherLevel::new(node, cpu_addr_cells.get())
                     .map(|(phandle, cache)| (phandle, Rc::new(cache)))
-                    .map_err(|()| NodeError::Cache)
+                    .map_err(|_err| NodeError::Cache)
             })
             .try_collect()?;
 

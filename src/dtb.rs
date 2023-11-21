@@ -293,15 +293,15 @@ impl<'a> DeviceTree<'a> {
 
                     let boot_args = chosen_node
                         .properties
-                        .remove(&Self::BOOTARGS)
+                        .remove(Self::BOOTARGS)
                         .map(|x| <&CStr>::try_from(x).unwrap().to_str().unwrap().into());
                     let stdin_path = chosen_node
                         .properties
-                        .remove(&Self::STDIN_PATH)
+                        .remove(Self::STDIN_PATH)
                         .map(|x| <&CStr>::try_from(x).unwrap().to_str().unwrap().into());
                     let stdout_path = chosen_node
                         .properties
-                        .remove(&Self::STDOUT_PATH)
+                        .remove(Self::STDOUT_PATH)
                         .map(|x| <&CStr>::try_from(x).unwrap().to_str().unwrap().into());
 
                     if !chosen_node.properties.is_empty() {
@@ -340,7 +340,7 @@ impl<'a> DeviceTree<'a> {
                     //         .unwrap()
                     // );
                     let boot_cpu = root.cpus.get(&boot_cpuid_phys).unwrap().clone();
-                    println!("{:?}", root.reserved_memory);
+                    println!("{:?}", root.cpus);
                     return Ok(Self {
                         root,
                         // aliases,

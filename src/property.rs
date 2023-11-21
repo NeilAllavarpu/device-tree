@@ -210,13 +210,13 @@ impl<'prop> EnableType<'prop> {
         properties: &mut Map<&'prop CStr, U32ByteSlice<'prop>>,
     ) -> Result<Self, EnableTypeError> {
         properties
-            .remove(&PropertyKeys::ENABLE_METHOD)
+            .remove(PropertyKeys::ENABLE_METHOD)
             .ok_or(EnableTypeError::NotPresent)
             .and_then(|bytes| <&CStr>::try_from(bytes).map_err(|_| EnableTypeError::Invalid))
             .and_then(|method| match method.to_bytes() {
                 b"spin-table" => Ok(EnableType::SpinTable(
                     properties
-                        .remove(&PropertyKeys::CPU_RELEASE_ADDR)
+                        .remove(PropertyKeys::CPU_RELEASE_ADDR)
                         .ok_or(EnableTypeError::NoReleaseAddr)?
                         .try_into()
                         .map_err(|_err| EnableTypeError::NoReleaseAddr)?,

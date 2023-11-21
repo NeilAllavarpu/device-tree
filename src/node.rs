@@ -14,6 +14,7 @@ use core::ffi::CStr;
 use core::num::NonZeroU32;
 use core::num::NonZeroU8;
 
+pub mod cache;
 pub mod cpu;
 pub mod memory_region;
 pub mod reserved_memory;
@@ -241,111 +242,4 @@ pub enum ManuModel {
 
 pub enum ChassisType {
     Desktop,
-}
-
-// TODO: Are these not actually required for a device tree to fully implement?
-#[derive(Debug)]
-pub struct CacheDescription {
-    /// Specifies the size in bytes of a cache.
-    size: Option<NonZeroU32>,
-    /// Specifies the number of associativity sets in a cache
-    sets: Option<NonZeroU32>,
-    /// Specifies the block size in bytes of a cache.
-    block_size: Option<NonZeroU32>,
-    /// Specifies the line size in bytes of a cache, if different than the cache block size
-    line_size: Option<NonZeroU32>,
-}
-
-#[derive(Debug)]
-pub struct HigherLevelCache<'a> {
-    cache: CacheDescription,
-    level: u32,
-    node: Node<'a>,
-}
-
-fn cache_desc<'b>(
-    properties: &mut Map<&'b CStr, U32ByteSlice<'_>>,
-    prefix: &str,
-) -> CacheDescription {
-    CacheDescription {
-        size: properties
-            .remove(
-                &(CStr::from_bytes_until_nul(format!("{}cache-size\0", prefix).leak().as_bytes())
-                    .unwrap()),
-            )
-            .and_then(|value| value.try_into().ok())
-            .and_then(NonZeroU32::new),
-        sets: properties
-            .remove(
-                &CStr::from_bytes_until_nul(format!("{}cache-sets\0", prefix).leak().as_bytes())
-                    .unwrap(),
-            )
-            .and_then(|value| value.try_into().ok())
-            .and_then(NonZeroU32::new),
-        block_size: properties
-            .remove(
-                &CStr::from_bytes_until_nul(
-                    format!("{}cache-block-size\0", prefix).leak().as_bytes(),
-                )
-                .unwrap(),
-            )
-            .and_then(|value| value.try_into().ok())
-            .and_then(NonZeroU32::new),
-        line_size: properties
-            .remove(
-                &CStr::from_bytes_until_nul(
-                    format!("{}cache-line-size\0", prefix).leak().as_bytes(),
-                )
-                .unwrap(),
-            )
-            .and_then(|value| value.try_into().ok())
-            .and_then(NonZeroU32::new),
-    }
-}
-
-impl<'a> HigherLevelCache<'a> {
-    fn new(mut value: RawNode<'a>, address_cells: u8) -> Result<(u32, Self), ()> {
-        let phandle = value
-            .properties
-            .remove(&PropertyKeys::PHANDLE)
-            .unwrap()
-            .try_into()
-            .unwrap();
-        assert_eq!(
-            &*parse_model_list(
-                value
-                    .properties
-                    .remove(&PropertyKeys::COMPATIBLE)
-                    .unwrap()
-                    .into()
-            )
-            .unwrap(),
-            ([Model::Other("cache".into())].as_slice()),
-            "f"
-        );
-        Ok((
-            phandle,
-            Self {
-                cache: cache_desc(&mut value.properties, ""),
-                level: value
-                    .properties
-                    .remove(&PropertyKeys::CACHE_LEVEL)
-                    .map(|value| value.try_into().unwrap())
-                    .unwrap(),
-                node: Node::new(value, Some(address_cells), Some(0)),
-            },
-        ))
-    }
-}
-
-#[derive(Debug)]
-pub struct HarvardCache {
-    pub icache: CacheDescription,
-    pub dcache: CacheDescription,
-}
-
-#[derive(Debug)]
-pub enum Cache {
-    Unified(CacheDescription),
-    Harvard(HarvardCache),
 }
