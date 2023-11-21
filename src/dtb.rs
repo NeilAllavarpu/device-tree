@@ -340,7 +340,7 @@ impl<'a> DeviceTree<'a> {
                     //         .unwrap()
                     // );
                     let boot_cpu = root.cpus.get(&boot_cpuid_phys).unwrap().clone();
-
+                    println!("{:?}", root.reserved_memory);
                     return Ok(Self {
                         root,
                         // aliases,

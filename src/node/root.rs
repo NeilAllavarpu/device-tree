@@ -1,4 +1,4 @@
-use super::{cpu, memory_region, ChassisType, RawNode, ReservedMemoryNode};
+use super::{cpu, memory_region, reserved_memory, ChassisType, RawNode};
 use crate::{
     map::Map,
     node::{memory_region::MemoryRegion, CellError, HigherLevelCache, PropertyKeys},
@@ -28,7 +28,7 @@ pub struct Node<'node> {
     /// The operating system shall exclude reserved memory from normal usage.
     /// One can create child nodes describing particular reserved (excluded from normal use) memory regions.
     /// Such memory regions are usually designed for the special usage by various device drivers.
-    reserved_memory: Map<NameRef<'node>, ReservedMemoryNode<'node>>,
+    pub(crate) reserved_memory: Map<NameRef<'node>, reserved_memory::Node<'node>>,
     /// A memory device node is required for all devicetrees and describes the physical memory layout for the system.
     /// If a system has multiple ranges of memory, multiple memory nodes can be created, or the ranges can be specified in the reg property of a single memory node.
     ///
@@ -69,7 +69,7 @@ pub enum NodeError {
     /// The parent node for reserved memory is invalid
     ReservedMemoryRoot,
     /// A reserved memory node is invalid
-    ReservedMemory,
+    ReservedMemory(reserved_memory::Error),
     /// A memory region is invalid
     Memory(memory_region::Error),
     /// The type of a node was invalid
@@ -129,6 +129,7 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             address_cells.map_err(NodeError::Cells)?,
             size_cells.map_err(NodeError::Cells)?,
         );
+        let size_cells = NonZeroU8::new(size_cells).ok_or(NodeError::Cells(CellError::Invalid))?;
 
         let mut cpus_root = value
             .children
@@ -181,7 +182,7 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             reserved_memory_root.extract_cell_counts();
 
         if !(reserved_memory_addr_cells.is_ok_and(|cells| cells == address_cells)
-            && reserved_memory_size_cells.is_ok_and(|cells| cells == size_cells)
+            && reserved_memory_size_cells.is_ok_and(|cells| cells == size_cells.get())
             && reserved_memory_root
                 .properties
                 .remove(PropertyKeys::RANGES)
@@ -194,18 +195,17 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             .children
             .into_iter()
             .map(|(name, node)| {
-                (
-                    name,
-                    ReservedMemoryNode::new(node, address_cells, size_cells),
-                )
+                reserved_memory::Node::new(node, address_cells, size_cells)
+                    .map(|reserved_node| (name, reserved_node))
             })
-            .collect();
+            .try_collect()
+            .map_err(NodeError::ReservedMemory)?;
 
         let memory = value
             .children
             .extract_if(|name, _| name.node_name() == NodeNames::memory())
             .map(|(name, memory_node)| {
-                MemoryRegion::new(memory_node, &name, address_cells, size_cells)
+                MemoryRegion::new(memory_node, &name, address_cells, size_cells.get())
                     .map_err(NodeError::Memory)
             })
             .try_collect()?;
@@ -219,7 +219,7 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             memory,
             reserved_memory,
             higher_caches: caches,
-            node: super::Node::new(value, address_cells, size_cells),
+            node: super::Node::new(value, Some(address_cells), Some(size_cells.get())),
         })
     }
 }

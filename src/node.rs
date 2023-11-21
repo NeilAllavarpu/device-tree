@@ -16,6 +16,7 @@ use core::num::NonZeroU8;
 
 pub mod cpu;
 pub mod memory_region;
+pub mod reserved_memory;
 pub mod root;
 
 /// A Device Tree Node
@@ -60,6 +61,7 @@ pub enum CellError {
     NotPresent,
     Invalid,
 }
+
 impl<'a> RawNode<'a> {
     /// Creates a node with the given name, children, and properties
     pub(crate) fn new(
@@ -72,23 +74,22 @@ impl<'a> RawNode<'a> {
         }
     }
 
+    /// Returns the address and size cells of this, if present
     fn extract_cell_counts(&mut self) -> (Result<u8, CellError>, Result<u8, CellError>) {
+        /// Type-proper function to consume a byte slice into a single u32
         fn parse_cells(bytes: U32ByteSlice<'_>) -> Result<u8, CellError> {
             u32::try_from(bytes)
                 .ok()
                 .and_then(|x| u8::try_from(x).ok())
                 .ok_or(CellError::Invalid)
         }
-
         (
             self.properties
                 .remove(&PropertyKeys::ADDRESS_CELLS)
-                .ok_or(CellError::NotPresent)
-                .and_then(parse_cells),
+                .map_or(Ok(2), parse_cells),
             self.properties
                 .remove(&PropertyKeys::SIZE_CELLS)
-                .ok_or(CellError::NotPresent)
-                .and_then(parse_cells),
+                .map_or(Ok(1), parse_cells),
         )
     }
 }
@@ -134,29 +135,19 @@ fn parse_cells(bytes: &mut U32ByteSlice<'_>, address_cells: u8, size_cells: u8) 
 }
 
 impl<'a> Node<'a> {
-    fn new(mut value: RawNode<'a>, address_cells: u8, size_cells: u8) -> Self {
-        println!("{:?}", value);
+    fn new(mut value: RawNode<'a>, address_cells: Option<u8>, size_cells: Option<u8>) -> Self {
         let (child_address_cells, child_size_cells) = value.extract_cell_counts();
         // let (child_address_cells, child_size_cells) =
         //     (child_address_cells.unwrap(), child_size_cells.unwrap());
+        println!("node {value:#?}");
 
         Self {
-            children: value
-                .children
-                .into_iter()
-                .map(|(name, raw_node)| {
-                    (
-                        name,
-                        Rc::new(Node::new(raw_node, child_address_cells.clone().unwrap(), child_size_cells.clone().unwrap())),
-                    )
-                })
-                .collect(),
             reg: value.properties.remove(&PropertyKeys::REG).map(|mut bytes| {
                 let mut reg_list = Vec::with_capacity(
-                    bytes.len() / usize::try_from(address_cells + size_cells).unwrap(),
+                    bytes.len() / usize::try_from(address_cells.unwrap() + size_cells.unwrap()).unwrap(),
                 );
                 while !bytes.is_empty() {
-                    reg_list.push(parse_cells(&mut bytes, address_cells, size_cells))
+                    reg_list.push(parse_cells(&mut bytes, address_cells.unwrap(), size_cells.unwrap()))
                 }
                 reg_list.into_boxed_slice()
             }),
@@ -178,7 +169,7 @@ impl<'a> Node<'a> {
             ranges: value.properties.remove(&PropertyKeys::RANGES).map(|mut bytes| {
                 let mut range_list = Vec::with_capacity(
                     bytes.len()
-                        / usize::try_from(address_cells + size_cells + child_size_cells.clone().unwrap()).unwrap(),
+                        / usize::try_from(address_cells.unwrap() + size_cells.unwrap() + child_size_cells.clone().unwrap()).unwrap(),
                 );
                 while !bytes.is_empty() {
                     range_list.push(Range {
@@ -199,18 +190,18 @@ impl<'a> Node<'a> {
                             }
                         }
                         .unwrap(),
-                        parent_address: match address_cells {
+                        parent_address: match address_cells.unwrap() {
                             0 => unreachable!("Address cells should never be 0"),
                             1 => bytes.consume_u32().map(u64::from),
                             2 => bytes.consume_u64(),
-                            _ => unimplemented!("Cannot handle address cell count {address_cells}"),
+                            _ => unimplemented!("Cannot handle address cell count {address_cells:?}"),
                         }
                         .unwrap(),
                         size: match child_size_cells.clone() {
                             Ok(0) => unreachable!("Size of a range should never be 0"),
                             Ok(1) => bytes.consume_u32().map(u64::from),
                             Ok(2) => bytes.consume_u64(),
-                            _ => unimplemented!("Cannot handle address cell count {address_cells}"),
+                            _ => unimplemented!("Cannot handle address cell count {address_cells:?}"),
                         }
                         .unwrap(),
                     })
@@ -227,6 +218,16 @@ impl<'a> Node<'a> {
                 .into_iter()
                 .map(|(label, bytes)| (label.into(), <&[u32]>::from(bytes).into()))
                 .collect(),
+                children: value
+                    .children
+                    .into_iter()
+                    .map(|(name, raw_node)| {
+                        (
+                            name,
+                            Rc::new(Node::new(raw_node, child_address_cells.clone().ok(), child_size_cells.clone().ok())),
+                        )
+                    })
+                    .collect(),
         }
     }
 }
@@ -331,7 +332,7 @@ impl<'a> HigherLevelCache<'a> {
                     .remove(&PropertyKeys::CACHE_LEVEL)
                     .map(|value| value.try_into().unwrap())
                     .unwrap(),
-                node: Node::new(value, address_cells, 0),
+                node: Node::new(value, Some(address_cells), Some(0)),
             },
         ))
     }
@@ -347,71 +348,4 @@ pub struct HarvardCache {
 pub enum Cache {
     Unified(CacheDescription),
     Harvard(HarvardCache),
-}
-
-#[derive(Debug)]
-enum ReservedMemoryUsage {
-    NoMap,
-    Reusable,
-    Other,
-}
-#[derive(Debug)]
-pub struct ReservedMemoryNode<'a> {
-    size: Option<u64>,
-    alignment: Option<u64>,
-    alloc_ranges: Option<Box<[(u64, u64)]>>,
-    node: Node<'a>,
-    usage: ReservedMemoryUsage,
-}
-
-impl<'a> ReservedMemoryNode<'a> {
-    fn new(mut value: RawNode<'a>, address_cells: u8, size_cells: u8) -> Self {
-        let size_prop = value.properties.remove(&PropertyKeys::SIZE);
-        let alignment_prop = value.properties.remove(&PropertyKeys::ALIGNMENT);
-        let (size, alignment) = match size_cells {
-            1 => (
-                size_prop.map(|x| u32::try_from(x).unwrap()).map(u64::from),
-                alignment_prop
-                    .map(|x| u32::try_from(x).unwrap())
-                    .map(u64::from),
-            ),
-            2 => (
-                size_prop.map(|x| x.try_into().unwrap()),
-                alignment_prop.map(|x| x.try_into().unwrap()),
-            ),
-            _ => unreachable!(),
-        };
-
-        let no_map = value.properties.remove(&PropertyKeys::NO_MAP).is_some();
-        let reusable = value.properties.remove(&PropertyKeys::REUSABLE).is_some();
-
-        assert!(!(no_map && reusable));
-
-        let alloc_ranges = if address_cells <= 2
-            && let Some(mut ranges) = value.properties.remove(&PropertyKeys::ALLOC_RANGES)
-        {
-            let mut reg = Vec::new();
-            while !ranges.is_empty() {
-                reg.push(parse_cells(&mut ranges, address_cells, size_cells))
-            }
-            reg.sort_unstable_by_key(|(start, _)| *start);
-            Some(reg.into_boxed_slice())
-        } else {
-            None
-        };
-
-        Self {
-            size,
-            alignment,
-            alloc_ranges,
-            node: Node::new(value, address_cells, size_cells),
-            usage: if no_map {
-                ReservedMemoryUsage::NoMap
-            } else if reusable {
-                ReservedMemoryUsage::Reusable
-            } else {
-                ReservedMemoryUsage::Other
-            },
-        }
-    }
 }
