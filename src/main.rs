@@ -29,7 +29,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         device_tree
     };
 
-    let root = device_tree.get_root();
+    let root = device_tree.root();
+    // println!("{:#X?}", device_tree.boot_cpu());
 
     // println!("{:X?}", root);
     // print!("$ ");

@@ -1,15 +1,13 @@
 //! The root node of the device tree. All nodes are descendants of this.
 
-use super::{
-    cache::HigherLevel, cpu, memory_region, reserved_memory, ChassisType, DeviceNode, RawNode,
-    RawNodeError,
-};
+use super::{cache::HigherLevel, cpu, memory_region, reserved_memory, RawNode, RawNodeError};
+use super::{ChildMap, DeviceNode, PropertyMap};
+use crate::property::{ChassisError, ChassisType};
 use crate::{
     map::Map,
     node::{memory_region::MemoryRegion, CellError, PropertyKeys},
     node_name::{NameRef, NameSlice},
-    parse::U32ByteSlice,
-    property::{parse_model_list, Model},
+    property::Model,
 };
 use alloc::rc::Rc;
 use core::ffi::CStr;
@@ -20,22 +18,22 @@ use core::num::NonZeroU8;
 pub struct Node<'node> {
     /// Specifies a string that uniquely identifies the model of the system board.
     /// The recommended format is `“manufacturer,model-number”``.
-    model: Model,
+    model: Model<'node>,
     /// Specifies a list of platform architectures with which this platform is compatible.
     /// This property can be used by operating systems in selecting platform specific code.
     /// The recommended form of the property value is: `"manufacturer,model"`. For example: `compatible = "fsl,mpc8572ds"`
-    compatible: Box<[Model]>,
+    compatible: Box<[Model<'node>]>,
     /// Specifies a string representing the device’s serial number.
     serial_number: Option<&'node CStr>,
     /// Specifies a string that identifies the form-factor of the system.
-    chassis_type: Option<ChassisType>,
+    chassis: Option<ChassisType>,
     /// Higher level caches present in the processor, beyond the L1
-    pub higher_caches: Map<u32, Rc<HigherLevel<'node>>>,
+    higher_caches: Map<u32, Rc<HigherLevel<'node>>>,
     /// Reserved memory is specified as a node under the /reserved-memory node.
     /// The operating system shall exclude reserved memory from normal usage.
     /// One can create child nodes describing particular reserved (excluded from normal use) memory regions.
     /// Such memory regions are usually designed for the special usage by various device drivers.
-    pub(crate) reserved_memory: Map<NameRef<'node>, reserved_memory::Node<'node>>,
+    reserved_memory: Map<NameRef<'node>, reserved_memory::Node<'node>>,
     /// A memory device node is required for all devicetrees and describes the physical memory layout for the system.
     /// If a system has multiple ranges of memory, multiple memory nodes can be created, or the ranges can be specified in the reg property of a single memory node.
     ///
@@ -49,16 +47,33 @@ pub struct Node<'node> {
     /// If the VLE storage attribute is supported, with VLE=0.
     memory: Box<[MemoryRegion<'node>]>,
     /// Child cpu nodes which represent the system's CPUs.
-    pub cpus: Map<u32, Rc<cpu::Node<'node>>>,
-    /// The remainder of this node
-    properties: Map<&'node CStr, U32ByteSlice<'node>>,
-    children: Map<NameRef<'node>, DeviceNode<'node>>,
+    cpus: Map<u32, Rc<cpu::Node<'node>>>,
+    /// Each property of the `/aliases` node defines an alias.
+    /// The property name specifies the alias name.
+    /// The property value specifies the full path to a node in the devicetree.
+    /// For example, the property `serial0 = "/simple-bus@fe000000/ serial@llc500"` defines the alias `serial0`.
+    aliases: Map<NameRef<'node>, Rc<DeviceNode<'node>>>,
+    /// Map of phandles to nodes
+    phandles: Map<u32, Rc<DeviceNode<'node>>>,
+    /// The remainder of this node's properties
+    properties: PropertyMap<'node>,
+    /// Children nodes of the root
+    children: ChildMap<'node>,
+}
+
+impl<'node> Node<'node> {
+    /// Returns the map of CPUs described by the device tree
+    #[must_use]
+    #[inline]
+    pub const fn cpus(&self) -> &Map<u32, Rc<cpu::Node<'node>>> {
+        &self.cpus
+    }
 }
 
 /// Errors from parsing a root node
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum NodeError {
+pub enum NodeError<'node> {
     /// The model is missing or invalid
     Model,
     /// The compatible field is missing or invalid
@@ -84,6 +99,8 @@ pub enum NodeError {
     /// The type of a node was invalid
     Type,
     Child(super::Error),
+    Chassis(ChassisError<'node>),
+    Alias,
 }
 
 /// "Constants" for various node names
@@ -91,41 +108,50 @@ struct NodeNames;
 
 impl NodeNames {
     /// The node name for the CPUs parent node
-    pub fn cpus() -> NameRef<'static> {
+    fn cpus() -> NameRef<'static> {
         NameRef::try_from(b"cpus".as_slice()).expect("Should be a valid name")
     }
 
     /// The prefix for CPU nodes' names
-    pub fn cpu_prefix() -> &'static NameSlice {
+    fn cpu_prefix() -> &'static NameSlice {
         <&NameSlice>::try_from(b"cpu".as_slice()).expect("Should be a valid name")
     }
     /// The node name for memory nodes
-    pub fn memory() -> &'static NameSlice {
+    fn memory() -> &'static NameSlice {
         <&NameSlice>::try_from(b"memory".as_slice()).expect("Should be a valid name")
     }
 
     /// The node name for reserved memory nodes
-    pub fn reserved_memory() -> NameRef<'static> {
+    fn reserved_memory() -> NameRef<'static> {
         NameRef::try_from(b"reserved-memory".as_slice()).expect("Should be a valid name")
+    }
+
+    /// The node names for the alias node
+    fn aliases() -> NameRef<'static> {
+        b"aliases"
+            .as_slice()
+            .try_into()
+            .expect("Should be a valid name")
     }
 }
 
 impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
-    type Error = NodeError;
+    type Error = NodeError<'node>;
 
     #[inline]
-    #[allow(clippy::too_many_lines)]
     fn try_from(mut value: RawNode<'node>) -> Result<Self, Self::Error> {
+        let mut phandles = Map::new();
         let model = value
             .properties
             .remove(PropertyKeys::MODEL)
-            .and_then(|x| Model::try_from(<&[u8]>::from(x)).ok())
+            .and_then(|bytes| <&CStr>::try_from(bytes).ok())
+            .map(Model::from)
             .ok_or(NodeError::Model)?;
 
         let compatible = value
             .properties
             .remove(&PropertyKeys::COMPATIBLE)
-            .and_then(|compatible| parse_model_list(compatible.into()).ok())
+            .and_then(|compatible| compatible.try_into().ok())
             .ok_or(NodeError::Model)?;
 
         let serial_number = value
@@ -157,13 +183,13 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             .children
             .extract_if(|name, _| !name.node_name().starts_with(NodeNames::cpu_prefix()))
             .map(|(_, node)| {
-                HigherLevel::new(node, cpu_addr_cells.get())
+                HigherLevel::new(node, &mut phandles)
                     .map(|(phandle, cache)| (phandle, Rc::new(cache)))
                     .map_err(|_err| NodeError::Cache)
             })
             .try_collect()?;
 
-        let cpus: Map<_, _> = cpus_root
+        let cpus = cpus_root
             .children
             .into_iter()
             .map(|(name, node)| {
@@ -201,11 +227,11 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             return Err(NodeError::ReservedMemoryRoot);
         }
 
-        let reserved_memory = reserved_memory_root
+        let reserved_memory: Map<_, _> = reserved_memory_root
             .children
             .into_iter()
             .map(|(name, node)| {
-                reserved_memory::Node::new(node, address_cells, size_cells)
+                reserved_memory::Node::new(node, address_cells, size_cells, &mut phandles)
                     .map(|reserved_node| (name, reserved_node))
             })
             .try_collect()
@@ -220,18 +246,91 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             })
             .try_collect()?;
 
-        let (properties, children) = value.into_components();
-        let children = match children {
+        let chassis = value
+            .properties
+            .remove(PropertyKeys::CHASSIS)
+            .map(ChassisType::try_from)
+            .transpose()
+            .map_err(NodeError::Chassis)?;
+
+        let aliases_node = value.children.remove(&NodeNames::aliases());
+
+        let (properties, children) = value.into_components(&mut phandles);
+        let children: Map<NameRef<'node>, Rc<DeviceNode<'node>>> = match children {
             Ok(children) => children,
             Err(RawNodeError::Cells) => return Err(NodeError::Cells(CellError::Invalid)),
             Err(RawNodeError::Child(child)) => return Err(NodeError::Child(child)),
         };
 
+        let aliases = aliases_node.map_or_else(Map::new, |aliases| {
+            aliases
+                .properties
+                .into_iter()
+                .filter_map(|(name, path)| {
+                    // println!("{name:?}: {path:?}");
+                    NameRef::try_from(name.to_bytes()).ok().zip(
+                        CStr::from_bytes_until_nul(path.into())
+                            .ok()
+                            .and_then(|c_path| {
+                                use crate::node::Node;
+                                let mut names = c_path
+                                    .to_bytes()
+                                    .split(|&char| char == b'/')
+                                    .filter(|x| !x.is_empty())
+                                    .filter_map(|x| NameRef::try_from(x).ok());
+                                let direct_child_name = names.next()?;
+
+                                let grandchild_name_opt = names
+                                .next();
+
+                                let entry = if direct_child_name == NodeNames::reserved_memory() {
+                                    grandchild_name_opt
+                                        .and_then(|grandchild_name| {
+                                            reserved_memory.get(&grandchild_name)
+                                        })
+                                        .and_then(|grandchild| {
+                                            names.next().map_or_else(|| {
+                                                eprintln!("WARNING: References to non-plain device nodes are not currently supported: {}", c_path.to_string_lossy());
+                                                None
+                                            }, |great_grandchild_name| {
+                                                grandchild.find(great_grandchild_name, names)
+                                            })
+                                        })
+                                } else {
+                                    children.get(&direct_child_name).and_then(|direct_child| {
+                                        grandchild_name_opt.map_or(Some(direct_child), |grandchild_name| {
+                                            direct_child.find(grandchild_name, names)
+                                        })
+                                    })
+                                };
+                                let entry = entry.map(|rc| {
+                                    // This unsafe code bypasses the lifetime limitations of `DeviceNode` and the original `children` map not living long enough before the function returns
+                                    let rc_pointer = Rc::into_raw(Rc::clone(rc));
+                                    let rc_pointer = rc_pointer.cast::<DeviceNode<'node>>();
+                                    // SAFETY:
+                                    // * This raw pointer came from the `Rc::into_raw` call above
+                                    // * `DeviceNode` always has the same size and alignment of itself
+                                    // * It is valid to perform this semi-transmute because the lifetime of all `DeviceNode`s are tied to the lifetime of the underlying bytes of the device tree blob itself, and this `Root`` also cannot last longer than that.
+                                    // So the lifetime of the new `DeviceNode` cannot outlive the data that it borrows from
+                                    unsafe { Rc::from_raw(rc_pointer) }
+                                });
+                                if entry.is_none() {
+                                    eprintln!("WARNING: Could not match {} to {}", name.to_string_lossy(), c_path.to_string_lossy());
+                                }
+                                entry
+                            }),
+                    )
+                })
+                .collect()
+        });
+
         Ok(Self {
+            phandles,
+            aliases,
             model,
             compatible,
             serial_number,
-            chassis_type: None,
+            chassis,
             cpus,
             memory,
             reserved_memory,

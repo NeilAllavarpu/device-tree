@@ -245,7 +245,7 @@ impl<'bytes> TryFrom<&'bytes [u8]> for NameRef<'bytes> {
                     .expect("Split iterator should always have at least one entry");
                 if address_parts.next().is_some() {
                     eprintln!(
-                        "WARNING: unhandled comma inunit address: {}@{}",
+                        "WARNING: unhandled comma in unit address: {}@{}",
                         str::from_utf8(node_name).unwrap_or("{invalid}"),
                         str::from_utf8(unit_address).unwrap_or("{invalid}"),
                     );

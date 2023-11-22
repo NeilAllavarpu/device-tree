@@ -94,6 +94,14 @@ impl<K: Ord, V> Map<K, V> {
     }
 }
 
+impl<K: Ord + Debug, V> Map<K, V> {
+    pub fn pkeys(&self) {
+        for (a, b) in &self.contents {
+            println!("{:?}", a);
+        }
+    }
+}
+
 impl<K: Ord + Clone, V: Clone> Map<K, V> {
     /// Extends the contents of this map with another map, but *maintains the current values* in the map instead of replacing duplicate keys
     pub(crate) fn extend_preserve(&mut self, other: &Self) {

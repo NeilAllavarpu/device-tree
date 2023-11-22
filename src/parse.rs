@@ -3,28 +3,42 @@ use core::{
     mem,
     num::NonZeroUsize,
     ptr::NonNull,
-    str,
 };
+
+/// A `U32ByteSlice` encapsulates a slice of `u32`s in big-endian format.
+/// This is the format used by the device tree header and struct portion of the device tree blob.
 #[derive(Debug, Clone, Copy)]
 pub struct U32ByteSlice<'bytes> {
+    /// The actual bytes themselves
     bytes: &'bytes [u32],
 }
 
 impl<'bytes> U32ByteSlice<'bytes> {
+    /// Wraps a big-endian slice of `u32`s into a parser
     pub const fn new(bytes: &'bytes [u32]) -> Self {
         Self { bytes }
     }
 
+    /// Removes the first `u32` from this slice, if any are left
     pub fn consume_u32(&mut self) -> Option<u32> {
         self.bytes.take_first().copied().map(u32::from_be)
     }
 
+    /// Removes the first two `u32`s from this slice and converts it to a `u64`, if there are enough `u32`s present
     pub fn consume_u64(&mut self) -> Option<u64> {
         self.bytes
             .take(..2)
-            .map(|bytes| u64::from(bytes[0]) << 32 | u64::from(bytes[1]))
+            .map(|pair| {
+                <&[u32; 2]>::try_from(pair).expect("`Take` should return a two-element array")
+            })
+            .map(|&[upper, lower]| {
+                (u64::from(u32::from_be(upper)) << u32::BITS) | u64::from(u32::from_be(lower))
+            })
     }
 
+    /// Removes the first `cell_count` `u32`s and returns them as an integer
+    ///
+    /// Currently the implementation only handles returning up to `u64`s, and will "silently" fail for larger cell counts (but will print out a message)
     pub fn consume_cells(&mut self, cell_count: u8) -> Option<u64> {
         match cell_count {
             0 => Some(0),
@@ -34,7 +48,7 @@ impl<'bytes> U32ByteSlice<'bytes> {
                 let value = self.consume_u64();
                 for _ in 2..count {
                     if self.consume_u32() != Some(0) {
-                        println!("Cannot handle cell count {cell_count}");
+                        eprintln!("WARNING: Cannot handle cell count {cell_count}");
                     }
                 }
                 value
@@ -42,8 +56,17 @@ impl<'bytes> U32ByteSlice<'bytes> {
         }
     }
 
-    /// c
-    #[expect(clippy::unwrap_in_result)]
+    /// Converts this byte slice into a single cell integer, if exactly `cell_count` integers are in the slice
+    ///
+    /// This has the same limitations as `consume_cells` with respect to cell counts
+    pub fn into_cells(mut self, cell_count: u8) -> Option<u64> {
+        self.consume_cells(cell_count).filter(|_| self.is_empty())
+    }
+
+    /// Converts this slice into a list of appropriate cell arrays, where the width of each element is determined by the corresponding size specified in `cell_counts`
+    ///
+    /// This has the same limitations as `consume_cells` with respect to cell counts
+    #[expect(clippy::unwrap_in_result, reason = "Checks should never fail")]
     pub fn into_cells_slice<const N: usize>(
         mut self,
         cell_counts: &[u8; N],
@@ -56,10 +79,10 @@ impl<'bytes> U32ByteSlice<'bytes> {
             .expect("The total size of cells should not overflow a `usize`")
             .expect("There should be a nonzero number of cells");
         if let Some(length) = NonZeroUsize::new(total_length) {
-            if self.len() % length != 0 {
+            if self.len_u32s() % length != 0 {
                 return None;
             }
-            let num_groups = self.len() / length;
+            let num_groups = self.len_u32s() / length;
             let mut cell_list = Vec::with_capacity(num_groups);
             while !self.is_empty() {
                 let mut cell_group = [0; N];
@@ -76,14 +99,17 @@ impl<'bytes> U32ByteSlice<'bytes> {
         }
     }
 
+    /// Takes the first `count` `u32`s from the slice, if there are enough
     pub fn take(&mut self, count: usize) -> Option<Self> {
         self.bytes.take(..count).map(Self::new)
     }
 
+    /// Extracts the first C string (i.e. up to the first null byte) from this slice, or fails if there is no null byte.
+    ///
+    /// Rounds up to the nearest `u32` boundary after removing the bytes corresponding to the C string
+    #[expect(clippy::unwrap_in_result, reason = "Checks should never fail")]
     pub fn consume_c_str(&mut self) -> Option<&'bytes CStr> {
-        let c_str = CStr::from_bytes_until_nul((*self).into())
-            .map_err(|_err| ParseStrError::NotNullTerminated)
-            .unwrap();
+        let c_str = CStr::from_bytes_until_nul((*self).into()).ok()?;
 
         self.bytes
             .take(
@@ -97,24 +123,30 @@ impl<'bytes> U32ByteSlice<'bytes> {
         Some(c_str)
     }
 
+    /// Returns whether or not there are any `u32`s left in this slice
     pub const fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
 
-    pub const fn len(&self) -> usize {
+    /// Returns the number of `u32`s in this slice, NOT the number of bytes
+    pub const fn len_u32s(&self) -> usize {
         self.bytes.len()
     }
 }
 
+/// Error from converting a byte slice to an integer
 #[derive(Debug)]
 pub enum TryFromError {
+    /// Insufficient contents in the byte slice
     Empty,
+    /// Too many contents in the byte slice
     Excess,
 }
 
 impl TryFrom<U32ByteSlice<'_>> for u32 {
     type Error = TryFromError;
 
+    #[inline]
     fn try_from(mut value: U32ByteSlice<'_>) -> Result<Self, Self::Error> {
         let result = value.consume_u32().ok_or(TryFromError::Empty);
         if value.is_empty() {
@@ -128,6 +160,7 @@ impl TryFrom<U32ByteSlice<'_>> for u32 {
 impl TryFrom<U32ByteSlice<'_>> for u64 {
     type Error = TryFromError;
 
+    #[inline]
     fn try_from(mut value: U32ByteSlice<'_>) -> Result<Self, Self::Error> {
         let result = value.consume_u64().ok_or(TryFromError::Empty);
         if value.is_empty() {
@@ -154,6 +187,7 @@ impl<'bytes> From<U32ByteSlice<'bytes>> for &'bytes [u8] {
 }
 
 impl<'bytes> From<U32ByteSlice<'bytes>> for &'bytes [u32] {
+    #[inline]
     fn from(value: U32ByteSlice<'bytes>) -> Self {
         value.bytes
     }
@@ -162,20 +196,17 @@ impl<'bytes> From<U32ByteSlice<'bytes>> for &'bytes [u32] {
 impl<'bytes> TryFrom<U32ByteSlice<'bytes>> for &'bytes CStr {
     type Error = FromBytesUntilNulError;
 
+    #[inline]
     fn try_from(value: U32ByteSlice<'bytes>) -> Result<Self, Self::Error> {
         CStr::from_bytes_until_nul(value.into())
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum ParseStrError {
-    NotNullTerminated,
-    Utf8Error(str::Utf8Error),
-}
-
-/// Attempts to convert a byte slice representing a `CStr` into a proper `str`
-pub(crate) fn parse_str(bytes: &[u8]) -> Result<&str, ParseStrError> {
-    let c_str =
-        CStr::from_bytes_until_nul(bytes).map_err(|_err| ParseStrError::NotNullTerminated)?;
-    c_str.to_str().map_err(ParseStrError::Utf8Error)
+/// Converts the given byte slice to a C string at compile time
+pub const fn to_c_str(string: &[u8]) -> &CStr {
+    if let Ok(c_string) = CStr::from_bytes_with_nul(string) {
+        c_string
+    } else {
+        unreachable!()
+    }
 }

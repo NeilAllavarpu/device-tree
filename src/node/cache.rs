@@ -2,8 +2,10 @@
 //!
 //! The device tree provides information as caches both as a part of CPU nodes (for L1 caches) or as independent nodes (for higher caches)
 
-use super::{CellError, DeviceNode, RawNode, RawNodeError};
-use crate::{map::Map, node::PropertyKeys, node_name::NameRef, parse::U32ByteSlice};
+use alloc::rc::Rc;
+
+use super::{ChildMap, DeviceNode, PropertyMap, RawNode, RawNodeError};
+use crate::{map::Map, node::PropertyKeys, parse::U32ByteSlice};
 use core::{ffi::CStr, num::NonZeroU32};
 
 // TODO: Are these not actually required for a device tree to fully implement?
@@ -100,9 +102,9 @@ pub struct HigherLevel<'node> {
     /// Specifies the level in the cache hierarchy. For example, a level 2 cache has a value of 2.
     level: u32,
     /// Children of this node
-    children: Map<NameRef<'node>, DeviceNode<'node>>,
+    children: ChildMap<'node>,
     /// Other miscellaneous properties
-    properties: Map<&'node CStr, U32ByteSlice<'node>>,
+    properties: PropertyMap<'node>,
 }
 
 /// Errors from parsing a node into a `HigherLevel` Cache
@@ -124,7 +126,7 @@ impl<'node> HigherLevel<'node> {
     /// Creates a new higher-level cache from the given device tree node
     pub(super) fn new(
         mut value: RawNode<'node>,
-        address_cells: u8,
+        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
     ) -> Result<(u32, Self), HigherLevelError> {
         if !value
             .properties
@@ -141,21 +143,15 @@ impl<'node> HigherLevel<'node> {
             .and_then(|x| x.try_into().ok())
             .ok_or(HigherLevelError::PHandle)?;
 
-        let (child_addr_cells, child_size_cells) = value.extract_cell_counts();
-        if matches!(child_addr_cells, Err(CellError::Invalid))
-            || matches!(child_size_cells, Err(CellError::Invalid))
-        {
-            return Err(HigherLevelError::Cells);
-        }
-
         let level = value
             .properties
             .remove(&PropertyKeys::CACHE_LEVEL)
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or(HigherLevelError::Level)?;
+
         let cache = cache_description!(&mut value.properties, b"");
 
-        let (properties, children) = value.into_components();
+        let (properties, children) = value.into_components(phandles);
         let children = match children {
             Ok(children) => children,
             Err(RawNodeError::Cells) => return Err(HigherLevelError::Cells),

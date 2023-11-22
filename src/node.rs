@@ -1,13 +1,13 @@
 use crate::map::Map;
 use crate::node_name::NameRef;
 
+use crate::parse::to_c_str;
 use crate::parse::U32ByteSlice;
-use crate::property::parse_model_list;
-use crate::property::to_c_str;
 use crate::property::Model;
 use crate::property::Range;
 use crate::property::Status;
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use core::ffi::CStr;
 
 pub mod cache;
@@ -15,6 +15,11 @@ pub mod cpu;
 pub mod memory_region;
 pub mod reserved_memory;
 pub mod root;
+
+/// Maps a name to a child node
+type ChildMap<'node> = Map<NameRef<'node>, Rc<DeviceNode<'node>>>;
+/// Maps a property string key to the corresponding raw bytes
+type PropertyMap<'node> = Map<&'node CStr, U32ByteSlice<'node>>;
 
 /// Namespace of constants for various property keys to look up
 #[expect(clippy::exhaustive_structs, reason = "No fields exported")]
@@ -26,6 +31,7 @@ impl PropertyKeys {
     pub const REG: &'static CStr = to_c_str(b"reg\0");
     pub const RANGES: &'static CStr = to_c_str(b"ranges\0");
     pub const COMPATIBLE: &'static CStr = to_c_str(b"compatible\0");
+    pub const CHASSIS: &'static CStr = to_c_str(b"chassis-type\0");
     pub const MODEL: &'static CStr = to_c_str(b"model\0");
     pub const STATUS: &'static CStr = to_c_str(b"status\0");
     pub const DEVICE_TYPE: &'static CStr = to_c_str(b"device_type\0");
@@ -49,8 +55,10 @@ impl PropertyKeys {
 /// A Device Tree Node
 #[derive(Debug)]
 pub(crate) struct RawNode<'node> {
+    /// Unparsed children, mapped from name to raw node
     pub(crate) children: Map<NameRef<'node>, RawNode<'node>>,
-    pub(crate) properties: Map<&'node CStr, U32ByteSlice<'node>>,
+    /// Unparsed properties
+    pub(crate) properties: PropertyMap<'node>,
 }
 
 /// Errors from parsing the address and size cell count properties of a node
@@ -63,8 +71,12 @@ pub enum CellError {
     Invalid,
 }
 
+/// Errors from attempting to convert a raw node's children into the appropriate device nodes
+#[non_exhaustive]
 pub enum RawNodeError {
+    /// Either the `address-cells` or `size-cells` field was invalid or missing when required
     Cells,
+    /// Error from parsing some child node
     Child(Error),
 }
 
@@ -104,10 +116,8 @@ impl<'node> RawNode<'node> {
     /// Error conditions indicate any errors with parsing some child of the node
     fn into_components(
         mut self,
-    ) -> (
-        Map<&'node CStr, U32ByteSlice<'node>>,
-        Result<Map<NameRef<'node>, DeviceNode<'node>>, RawNodeError>,
-    ) {
+        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
+    ) -> (PropertyMap<'node>, Result<ChildMap<'node>, RawNodeError>) {
         let (child_addr_cells, child_size_cells) = self.extract_cell_counts();
         (
             self.properties,
@@ -119,32 +129,111 @@ impl<'node> RawNode<'node> {
                 self.children
                     .into_iter()
                     .map(|(name, raw_node)| {
-                        DeviceNode::new(raw_node, child_addr_cells.ok(), child_size_cells.ok())
-                            .map(|device_node| (name, device_node))
+                        DeviceNode::new(
+                            raw_node,
+                            child_addr_cells.ok(),
+                            child_size_cells.ok(),
+                            phandles,
+                        )
+                        .map(|device_node| (name, device_node))
                     })
                     .try_collect()
                     .map_err(RawNodeError::Child)
             },
         )
     }
+
+    /// Decomposes this raw node into a parsed map of `DeviceNode` children and map of properties.
+    ///
+    /// Error conditions indicate any errors with parsing some child of the node
+    fn into_components_from_cells(
+        self,
+        address_cells: Option<u8>,
+        size_cells: Option<u8>,
+        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
+    ) -> (PropertyMap<'node>, Result<ChildMap<'node>, RawNodeError>) {
+        (
+            self.properties,
+            self.children
+                .into_iter()
+                .map(|(name, raw_node)| {
+                    DeviceNode::new(raw_node, address_cells, size_cells, phandles)
+                        .map(|device_node| (name, device_node))
+                })
+                .try_collect()
+                .map_err(RawNodeError::Child),
+        )
+    }
 }
 
-pub trait Node {
-    fn properties(&self) -> &Map<&CStr, U32ByteSlice>;
-    fn children(&self) -> &Map<NameRef, &DeviceNode>;
+pub trait Node<'node> {
+    fn properties(&self) -> &PropertyMap;
+    fn children(&self) -> &ChildMap<'node>;
+
+    #[inline]
+    fn find<'path>(
+        &'node self,
+        sub_path: NameRef<'path>,
+        mut rest_path: impl Iterator<Item = NameRef<'path>>,
+    ) -> Option<&'node Rc<DeviceNode<'node>>>
+    where
+        'path: 'node,
+    {
+        self.children().get(&sub_path).and_then(|node| {
+            rest_path
+                .next()
+                .map_or(Some(node), |next_path| node.find(next_path, rest_path))
+        })
+    }
+}
+
+impl<'node> Node<'node> for DeviceNode<'node> {
+    #[inline]
+    fn properties(&self) -> &PropertyMap {
+        &self.properties
+    }
+
+    #[inline]
+    fn children(&self) -> &ChildMap<'node> {
+        &self.children
+    }
 }
 
 /// A Device Tree Node
 #[derive(Debug)]
 pub struct DeviceNode<'node> {
-    /// Children
-    pub(crate) children: Map<NameRef<'node>, DeviceNode<'node>>,
-    pub(crate) compatible: Option<Box<[Model]>>,
-    pub(crate) model: Option<Model>,
-    pub(crate) reg: Option<Box<[[u64; 2]]>>,
-    pub(crate) ranges: Option<Box<[Range]>>,
-    pub(crate) status: Status<'node>,
-    pub(crate) properties: Map<&'node CStr, U32ByteSlice<'node>>,
+    /// Children of this node
+    children: ChildMap<'node>,
+    /// The compatible property value consists of one or more strings that define the specific programming model for the device.
+    /// This list of strings should be used by a client program for device driver selection.
+    /// The property value consists of a concatenated list of null terminated strings, from most specific to most general.
+    /// They allow a device to express its compatibility with a family of similar devices, potentially allowing a single device driver to match against several devices.
+    ///
+    /// The recommended format is "manufacturer,model", where manufacturer is a string describing the name of the manufacturer (such as a stock ticker symbol), and model specifies the model number.
+    ///
+    /// The compatible string should consist only of lowercase letters, digits and dashes, and should start with a letter.
+    ///
+    /// A single comma is typically only used following a vendor prefix. Underscores should not be used.
+    ///
+    /// Example:
+    ///
+    ///     compatible = "fsl,mpc8641", "ns16550";
+    ///
+    /// In this example, an operating system would first try to locate a device driver that supported fsl,mpc8641. If a
+    /// driver was not found, it would then try to locate a driver that supported the more general ns16550 device type.
+    compatible: Option<Box<[Model<'node>]>>,
+    ///  The model property value is a `<string>` that specifies the manufacturer’s model number of the device.
+    model: Option<Model<'node>>,
+    /// The `r`eg property describes the address of the device’s resources within the address space defined by its parent bus.
+    /// Most commonly this means the offsets and lengths of memory-mapped IO register blocks, but may have a different meaning on some bus types.
+    /// Addresses in the address space defined by the root node are CPU real addresses.
+    reg: Option<Box<[[u64; 2]]>>,
+    /// The `ranges`` property provides a means of defining a mapping or translation between the address space of the bus (the child address space) and the address space of the bus node’s parent (the parent address space).
+    ranges: Option<Box<[Range]>>,
+    /// The status property indicates the operational status of a device.
+    status: Status<'node>,
+    /// Miscellaneous extra properties regarding this node
+    properties: PropertyMap<'node>,
 }
 
 #[derive(Debug)]
@@ -156,6 +245,8 @@ pub enum Error {
     Ranges,
     Status,
     Cells,
+    BadPHandle,
+    DuplicatePHandle,
     Child(Box<Error>),
 }
 
@@ -165,8 +256,10 @@ impl<'node> DeviceNode<'node> {
         mut value: RawNode<'node>,
         address_cells: Option<u8>,
         size_cells: Option<u8>,
-    ) -> Result<Self, Error> {
+        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
+    ) -> Result<Rc<Self>, Error> {
         let (child_address_cells, child_size_cells) = value.extract_cell_counts();
+
         let reg = value
             .properties
             .remove(&PropertyKeys::REG)
@@ -180,12 +273,16 @@ impl<'node> DeviceNode<'node> {
         let compatible = value
             .properties
             .remove(&PropertyKeys::COMPATIBLE)
-            .map(|bytes| parse_model_list(bytes.into()).map_err(|_err| Error::Compatible))
+            .map(|bytes| bytes.try_into().map_err(|_err| Error::Compatible))
             .transpose()?;
         let model = value
             .properties
             .remove(&PropertyKeys::MODEL)
-            .map(|bytes| Model::try_from(<&[u8]>::from(bytes)).map_err(|_| Error::Model))
+            .map(|bytes| {
+                <&CStr>::try_from(bytes)
+                    .map(Model::from)
+                    .map_err(|_err| Error::Model)
+            })
             .transpose()?;
 
         let ranges = value
@@ -214,16 +311,26 @@ impl<'node> DeviceNode<'node> {
             .properties
             .remove(&PropertyKeys::STATUS)
             .map_or(Ok(Status::Ok), |bytes| {
-                Status::try_from(<&[u8]>::from(bytes)).map_err(|_err| Error::Status)
+                Status::try_from(bytes).map_err(|_err| Error::Status)
             })?;
 
-        let (properties, children) = value.into_components();
-        let children = match children {
-            Ok(children) => children,
-            Err(RawNodeError::Cells) => return Err(Error::Cells),
-            Err(RawNodeError::Child(child)) => return Err(Error::Child(Box::new(child))),
-        };
-        Ok(Self {
+        let phandle = value
+            .properties
+            .remove(PropertyKeys::PHANDLE)
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_err| Error::BadPHandle)?;
+
+        let (properties, children) = value.into_components_from_cells(
+            child_address_cells.ok(),
+            child_size_cells.ok(),
+            phandles,
+        );
+        let children = children.map_err(|err| match err {
+            RawNodeError::Cells => Error::Cells,
+            RawNodeError::Child(child) => Error::Child(Box::new(child)),
+        })?;
+        let node = Rc::new(Self {
             children,
             compatible,
             model,
@@ -231,17 +338,13 @@ impl<'node> DeviceNode<'node> {
             ranges,
             status,
             properties,
-        })
+        });
+
+        if let Some(phandle) = phandle {
+            if phandles.insert(phandle, Rc::clone(&node)).is_some() {
+                return Err(Error::DuplicatePHandle);
+            };
+        }
+        Ok(node)
     }
-}
-
-#[derive(Debug)]
-pub enum ManuModel {
-    ManuModel(Box<str>, Box<str>),
-    Other(Box<str>),
-}
-#[derive(Debug)]
-
-pub enum ChassisType {
-    Desktop,
 }

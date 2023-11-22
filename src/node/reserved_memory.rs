@@ -2,10 +2,10 @@
 //!
 //! This is different from the memory reservations described in the DTB that are not part of the device tree directly
 
-use super::{DeviceNode, RawNode, RawNodeError};
+use alloc::rc::Rc;
+
+use super::{ChildMap, DeviceNode, PropertyMap, RawNode, RawNodeError};
 use crate::map::Map;
-use crate::node_name::NameRef;
-use crate::parse::U32ByteSlice;
 use crate::{node::PropertyKeys, split_at_first};
 use core::{ffi::CStr, num::NonZeroU8};
 use core::{fmt, str};
@@ -114,9 +114,9 @@ pub struct Node<'node> {
     /// Additional information about the usage of this memory
     compatible: Option<Compatible<'node>>,
     /// Other miscellaneous properties
-    properties: Map<&'node CStr, U32ByteSlice<'node>>,
+    properties: PropertyMap<'node>,
     /// Any children, if present
-    children: Map<NameRef<'node>, DeviceNode<'node>>,
+    children: ChildMap<'node>,
 }
 
 /// Errors that can occur when parsing a reserved memory node
@@ -127,7 +127,7 @@ pub enum Error {
     InvalidMemory,
     /// Error parsing the usage: both `no_map` and `reusable` were specified
     Usage,
-    /// Invalid  cells provided while attempting to parse
+    /// Invalid cells provided while attempting to parse
     Cells,
     /// Error parsing the compatibility field
     Compatible,
@@ -141,29 +141,17 @@ impl<'node> Node<'node> {
         mut value: RawNode<'node>,
         address_cells: u8,
         size_cells: NonZeroU8,
+        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
     ) -> Result<Self, Error> {
         let size = value
             .properties
             .remove(PropertyKeys::SIZE)
-            .map(|bytes| match size_cells.get() {
-                1 => u32::try_from(bytes)
-                    .map_err(|_err| Error::InvalidMemory)
-                    .map(u64::from),
-                2 => u64::try_from(bytes).map_err(|_err| Error::InvalidMemory),
-                cells => unimplemented!("Size cells {cells} is not currently supported"),
-            })
+            .map(|bytes| bytes.into_cells(size_cells.get()).ok_or(Error::Cells))
             .transpose()?;
         let alignment = value
             .properties
             .remove(PropertyKeys::ALIGNMENT)
-            .map(|bytes| match size_cells.get() {
-                0 => Err(Error::Cells),
-                1 => u32::try_from(bytes)
-                    .map_err(|_err| Error::InvalidMemory)
-                    .map(u64::from),
-                2 => u64::try_from(bytes).map_err(|_err| Error::InvalidMemory),
-                cells => unimplemented!("Size cells {cells} is not currently supported"),
-            })
+            .map(|bytes| bytes.into_cells(size_cells.get()).ok_or(Error::Cells))
             .transpose()?;
 
         let regs = value
@@ -215,7 +203,7 @@ impl<'node> Node<'node> {
             })
             .transpose()?;
 
-        let (properties, children) = value.into_components();
+        let (properties, children) = value.into_components(phandles);
         let children = match children {
             Ok(children) => children,
             Err(RawNodeError::Cells) => return Err(Error::Cells),
@@ -241,5 +229,17 @@ impl<'node> Node<'node> {
             properties,
             children,
         })
+    }
+}
+
+impl<'node> super::Node<'node> for Node<'node> {
+    #[inline]
+    fn properties(&self) -> &PropertyMap {
+        &self.properties
+    }
+
+    #[inline]
+    fn children(&self) -> &ChildMap<'node> {
+        &self.children
     }
 }

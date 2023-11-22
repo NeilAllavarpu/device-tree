@@ -3,7 +3,7 @@
 use crate::{
     map::Map,
     parse::U32ByteSlice,
-    property::{EnableType, EnableTypeError},
+    property::{EnableMethod, EnableMethodError},
 };
 use alloc::rc::Rc;
 use core::{ffi::CStr, num::NonZeroU8};
@@ -41,7 +41,7 @@ pub enum Status {
 #[derive(Debug)]
 pub struct Node<'node> {
     /// The mechanism for enabling a CPU. Required if `status` is `Fail`
-    enable_method: Option<EnableType<'node>>,
+    enable_method: Option<EnableMethod<'node>>,
     /// A unique identifier for this CPU
     pub(crate) reg: u32,
     /// The L1 cache for this CPU
@@ -92,11 +92,11 @@ impl<'node> Node<'node> {
             return Err(NodeError::DeviceType);
         }
 
-        let enable_method = match EnableType::extract_from_properties(&mut value.properties) {
+        let enable_method = match EnableMethod::extract_from_properties(&mut value.properties) {
             Ok(method) => Some(method),
-            Err(EnableTypeError::NotPresent) => None,
-            Err(EnableTypeError::NoReleaseAddr) => return Err(NodeError::ReleaseAddr),
-            Err(EnableTypeError::Invalid) => return Err(NodeError::EnableMethod),
+            Err(EnableMethodError::NotPresent) => None,
+            Err(EnableMethodError::NoReleaseAddr) => return Err(NodeError::ReleaseAddr),
+            Err(EnableMethodError::Invalid) => return Err(NodeError::EnableMethod),
         };
 
         let status = {

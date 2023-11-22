@@ -2,11 +2,8 @@
 //!
 //! This module parses the device tree blob from memory and converts it into a convenient Rust object, on which you can call various methods to query the device tree
 
-use crate::node::cpu;
-use crate::{
-    map::Map, node::root, node::RawNode, node_name::NameRef, parse::U32ByteSlice,
-    property::to_c_str,
-};
+use crate::node::{cpu, RawNode};
+use crate::{map::Map, node::root, node_name::NameRef, parse::to_c_str, parse::U32ByteSlice};
 use alloc::{rc::Rc, vec::Vec};
 use core::{
     ffi::CStr,
@@ -24,7 +21,7 @@ const TOKEN_END: u32 = 0x9;
 
 #[non_exhaustive]
 #[derive(Debug)]
-pub enum DeviceTreeError {
+pub enum DeviceTreeError<'a> {
     /// The device tree, or some field inside the device tree, was not properly aligned
     Alignment,
     /// The magic bytes at the beginning of the device tree were incorrect
@@ -45,21 +42,24 @@ pub enum DeviceTreeError {
     Parsing,
     /// An invalid token was encountered while parsing
     InvalidToken(u32),
+    /// Error parsing nodes
+    Node(root::NodeError<'a>),
+    /// The boot CPU specified was invalid
+    BootCpu,
 }
 
-impl Display for DeviceTreeError {
+impl<'a> Display for DeviceTreeError<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         <Self as Debug>::fmt(self, f)
     }
 }
 
-impl core::error::Error for DeviceTreeError {}
+impl<'a> core::error::Error for DeviceTreeError<'a> {}
 
 #[derive(Debug)]
 pub struct DeviceTree<'a> {
     root: root::Node<'a>,
     version: u32,
-    // aliases: HashMap<Name, Box<str>>,
     boot_args: Option<Box<str>>,
     stdout_path: Option<Box<str>>,
     stdin_path: Option<Box<str>>,
@@ -68,9 +68,6 @@ pub struct DeviceTree<'a> {
 }
 
 impl<'a> DeviceTree<'a> {
-    fn aliases() -> NameRef<'static> {
-        b"aliases".as_slice().try_into().unwrap()
-    }
     fn chosen() -> NameRef<'static> {
         b"chosen".as_slice().try_into().unwrap()
     }
@@ -89,7 +86,7 @@ impl<'a> DeviceTree<'a> {
     #[expect(clippy::panic_in_result_fn)]
     #[expect(clippy::too_many_lines)]
     #[inline]
-    pub unsafe fn from_raw(dt_addr: NonNull<u64>) -> Result<Self, DeviceTreeError> {
+    pub unsafe fn from_raw(dt_addr: NonNull<u64>) -> Result<Self, DeviceTreeError<'a>> {
         /// The magic bytes located at the start of the device tree
         const FDT_HEADER_MAGIC: u32 = 0xD00D_FEED;
 
@@ -267,23 +264,6 @@ impl<'a> DeviceTree<'a> {
                         return Err(DeviceTreeError::EoF);
                     }
 
-                    let aliases_node = root.children.remove(&Self::aliases()).unwrap();
-                    // let aliases = aliases_node
-                    //     .properties
-                    //     .into_iter()
-                    //     .map(|(name, value)| {
-                    //         (
-                    //             name.into(),
-                    //             CStr::from_bytes_until_nul(value.into())
-                    //                 .unwrap()
-                    //                 .to_str()
-                    //                 .unwrap()
-                    //                 .into(),
-                    //         )
-                    //     })
-                    //     .collect();
-                    assert!(aliases_node.children.is_empty());
-
                     let mut chosen_node = root
                         .children
                         .remove(&Self::chosen())
@@ -311,39 +291,15 @@ impl<'a> DeviceTree<'a> {
                         );
                     }
 
-                    let root: root::Node = root.try_into().unwrap();
-                    // .map_err(|_err| DeviceTreeError::Parsing)
-                    // .unwrap();
-                    // println!(
-                    //     "hi {:?}",
-                    //     root.node
-                    //         .children
-                    //         .get("soc")
-                    //         .unwrap()
-                    //         .children
-                    //         .get("serial@7e201000")
-                    //         .unwrap()
-                    //         .properties
-                    // );
+                    let root: root::Node = root.try_into().map_err(DeviceTreeError::Node)?;
 
-                    // println!(
-                    //     "{:?}",
-                    //     root.node
-                    //         .children
-                    //         .get(&("soc".into(), None))
-                    //         .unwrap()
-                    //         .children
-                    //         .get(&("serial".into(), Some(0x7E20_1000)))
-                    //         .unwrap()
-                    //         .children
-                    //         .get(&("bluetooth".into(), None))
-                    //         .unwrap()
-                    // );
-                    let boot_cpu = root.cpus.get(&boot_cpuid_phys).unwrap().clone();
-                    println!("{:?}", root.cpus);
+                    let boot_cpu = Rc::clone(
+                        root.cpus()
+                            .get(&boot_cpuid_phys)
+                            .ok_or(DeviceTreeError::BootCpu)?,
+                    );
                     return Ok(Self {
                         root,
-                        // aliases,
                         version,
                         last_compatible_version: last_comp_version,
                         boot_cpu,
@@ -360,15 +316,14 @@ impl<'a> DeviceTree<'a> {
     }
 
     #[inline]
-    pub fn get_root(&self) -> &root::Node {
+    #[must_use]
+    pub const fn root(&self) -> &root::Node {
         &self.root
     }
 
-    pub fn cpus(&self) -> &Map<u32, Rc<cpu::Node>> {
-        &self.root.cpus
-    }
-
-    pub fn boot_cpu(&self) -> Rc<cpu::Node> {
-        self.boot_cpu.clone()
+    #[must_use]
+    #[inline]
+    pub const fn boot_cpu(&self) -> &Rc<cpu::Node<'a>> {
+        &self.boot_cpu
     }
 }
