@@ -9,8 +9,9 @@ use alloc::rc::Rc;
 use core::{ffi::CStr, num::NonZeroU8};
 
 use super::{
-    cache::{HigherLevel, L1},
-    PropertyKeys, RawNode,
+    cache::{HigherLevel, HigherLevelError, L1},
+    root::NodeNames,
+    DeviceNode, PropertyKeys, RawNode,
 };
 
 /// Status of a CPU as indicated by the node
@@ -72,9 +73,23 @@ pub enum NodeError {
     NextLevelCache,
 }
 
+/// Errors from attempting to parse the parent `/cpus` node
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum RootError {
+    /// Error parsing a child CPU
+    Cpu(NodeError),
+    /// Error parsing a child cache
+    Cache(HigherLevelError),
+    /// Missing a field for address/size cells
+    Reg,
+    /// Mismatch between a child CPU's specified reg and its unit-address
+    RegMismatch(Option<u64>, u32),
+}
+
 impl<'node> Node<'node> {
     /// Parses and creates a CPU node from the provided informaiton
-    pub(super) fn new<'parsing>(
+    fn new<'parsing>(
         mut value: RawNode<'node>,
         base: &'parsing Map<&'node CStr, U32ByteSlice<'node>>,
         cache_handles: &'parsing Map<u32, Rc<HigherLevel<'node>>>,
@@ -150,5 +165,46 @@ impl<'node> Node<'node> {
             status,
             properties: value.properties,
         })
+    }
+
+    /// Parses the parent CPU node and returns a map describing all the children CPU nodes + caches, or returns an error
+    pub(super) fn parse_parent(
+        mut parent: RawNode<'node>,
+        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
+    ) -> Result<(Map<u32, Rc<Self>>, Map<u32, Rc<HigherLevel<'node>>>), RootError> {
+        let (Ok(cpu_addr_cells), Ok(0)) = parent.extract_cell_counts() else {
+            return Err(RootError::Reg);
+        };
+        let cpu_addr_cells = NonZeroU8::new(cpu_addr_cells).ok_or(RootError::Reg)?;
+
+        let caches = parent
+            .children
+            .extract_if(|name, _| !name.node_name().starts_with(NodeNames::cpu_prefix()))
+            .map(|(_, node)| {
+                HigherLevel::new(node, phandles)
+                    .map(|(phandle, cache)| (phandle, Rc::new(cache)))
+                    .map_err(RootError::Cache)
+            })
+            .try_collect()?;
+
+        parent
+            .children
+            .into_iter()
+            .map(|(name, node)| {
+                let node = Rc::new(
+                    Self::new(node, &parent.properties, &caches, cpu_addr_cells)
+                        .map_err(RootError::Cpu)?,
+                );
+
+                if name
+                    .unit_address()
+                    .is_some_and(|address| address != node.reg.into())
+                {
+                    return Err(RootError::RegMismatch(name.unit_address(), node.reg));
+                }
+                Ok((node.reg, node))
+            })
+            .try_collect()
+            .map(|cpus| (cpus, caches))
     }
 }

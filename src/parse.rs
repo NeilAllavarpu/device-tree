@@ -1,3 +1,7 @@
+//! Parsing of raw bytes into more Rust-friendly formats
+//!
+//! The core struct encapsulates the raw, `u32`-aligned, big-endian device tree blob and provides utility functions for extracting meaningful, endianness-independent data.
+
 use core::{
     ffi::{CStr, FromBytesUntilNulError},
     mem,
@@ -11,29 +15,67 @@ use core::{
 pub struct U32ByteSlice<'bytes> {
     /// The actual bytes themselves
     bytes: &'bytes [u32],
+    /// The number of padding bytes inserted into this byte slice
+    padding: u8,
 }
+
+/// Width of a single element in the slice
+const ELEMENT_WIDTH: usize = mem::size_of::<u32>();
 
 impl<'bytes> U32ByteSlice<'bytes> {
     /// Wraps a big-endian slice of `u32`s into a parser
-    pub const fn new(bytes: &'bytes [u32]) -> Self {
-        Self { bytes }
+    #[expect(clippy::unwrap_in_result, reason = "Checks should never fail")]
+    pub fn new(bytes: &'bytes [u32], length: usize) -> Option<Self> {
+        if length.div_ceil(ELEMENT_WIDTH) == bytes.len() {
+            let padding = bytes
+                .len()
+                .checked_mul(ELEMENT_WIDTH)
+                .and_then(|byte_count| byte_count.checked_sub(length))
+                .and_then(|padding| u8::try_from(padding).ok())
+                .expect("Length should be 0..4 less than number of provided bytes");
+            (!bytes.last().is_some_and(|&chunk| {
+                u32::from_be(chunk)
+                    .to_be_bytes()
+                    .iter()
+                    .rev()
+                    .take(padding.into())
+                    .any(|&byte| byte != 0)
+            }))
+            .then_some(Self { bytes, padding })
+        } else {
+            None
+        }
+    }
+
+    /// Returns the number of *whole* `u32`s available, i.e. excluding any partial `u32` with padding
+    fn remaining_u32s(&self) -> usize {
+        self.len_u32s()
+            .saturating_sub(usize::from(self.padding > 0))
     }
 
     /// Removes the first `u32` from this slice, if any are left
     pub fn consume_u32(&mut self) -> Option<u32> {
-        self.bytes.take_first().copied().map(u32::from_be)
+        if self.remaining_u32s() >= 1 {
+            self.bytes.take_first().copied().map(u32::from_be)
+        } else {
+            None
+        }
     }
 
     /// Removes the first two `u32`s from this slice and converts it to a `u64`, if there are enough `u32`s present
     pub fn consume_u64(&mut self) -> Option<u64> {
-        self.bytes
-            .take(..2)
-            .map(|pair| {
-                <&[u32; 2]>::try_from(pair).expect("`Take` should return a two-element array")
-            })
-            .map(|&[upper, lower]| {
-                (u64::from(u32::from_be(upper)) << u32::BITS) | u64::from(u32::from_be(lower))
-            })
+        if self.remaining_u32s() >= 2 {
+            self.bytes
+                .take(..2)
+                .map(|pair| {
+                    <&[u32; 2]>::try_from(pair).expect("`Take` should return a two-element array")
+                })
+                .map(|&[upper, lower]| {
+                    (u64::from(u32::from_be(upper)) << u32::BITS) | u64::from(u32::from_be(lower))
+                })
+        } else {
+            None
+        }
     }
 
     /// Removes the first `cell_count` `u32`s and returns them as an integer
@@ -71,6 +113,9 @@ impl<'bytes> U32ByteSlice<'bytes> {
         mut self,
         cell_counts: &[u8; N],
     ) -> Option<Box<[[u64; N]]>> {
+        if self.padding != 0 {
+            return None;
+        }
         let total_length = cell_counts
             .iter()
             .copied()
@@ -99,9 +144,16 @@ impl<'bytes> U32ByteSlice<'bytes> {
         }
     }
 
-    /// Takes the first `count` `u32`s from the slice, if there are enough
-    pub fn take(&mut self, count: usize) -> Option<Self> {
-        self.bytes.take(..count).map(Self::new)
+    /// Takes the first `count` *bytes* from the slice, if there are enough.
+    /// After the removal, this slice is still aligned to `u32`s, i.e. padding may be discarded
+    pub fn take(&mut self, bytes: usize) -> Option<Self> {
+        if bytes <= self.len_bytes() {
+            self.bytes
+                .take(..bytes.div_ceil(ELEMENT_WIDTH))
+                .map(|slice| Self::new(slice, bytes).expect("Enough bytes should have been taken"))
+        } else {
+            None
+        }
     }
 
     /// Extracts the first C string (i.e. up to the first null byte) from this slice, or fails if there is no null byte.
@@ -111,26 +163,55 @@ impl<'bytes> U32ByteSlice<'bytes> {
     pub fn consume_c_str(&mut self) -> Option<&'bytes CStr> {
         let c_str = CStr::from_bytes_until_nul((*self).into()).ok()?;
 
-        self.bytes
-            .take(
-                ..c_str
-                    .to_bytes_with_nul()
-                    .len()
-                    .div_ceil(mem::size_of::<u32>()),
-            )
+        let bytes_consumed = c_str
+            .count_bytes()
+            .checked_add(1) // NUL byte
+            .expect("Number of total bytes should fit into a `usize`");
+
+        let taken = self
+            .bytes
+            .take(..bytes_consumed.div_ceil(ELEMENT_WIDTH))
             .expect("The CStr should remain within the bounds of the slice");
+
+        let padding = bytes_consumed
+            .next_multiple_of(ELEMENT_WIDTH)
+            .checked_sub(bytes_consumed)
+            .expect("Padding should never be negative");
+
+        // Extra padding should always be zeroes
+        if !u32::from_be(
+            *taken
+                .last()
+                .expect("At least one NUL byte should be consumed for each CStr"),
+        )
+        .to_be_bytes()
+        .iter()
+        .rev()
+        .take(padding)
+        .all(|&byte| byte == 0)
+        {
+            return None;
+        }
 
         Some(c_str)
     }
 
-    /// Returns whether or not there are any `u32`s left in this slice
+    /// Returns whether or not there are any bytes left in this slice
     pub const fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
 
     /// Returns the number of `u32`s in this slice, NOT the number of bytes
-    pub const fn len_u32s(&self) -> usize {
+    const fn len_u32s(&self) -> usize {
         self.bytes.len()
+    }
+
+    /// Returns the number of bytes in this slice, NOT the number of `u32`s
+    fn len_bytes(&self) -> usize {
+        self.len_u32s()
+            .checked_mul(ELEMENT_WIDTH)
+            .and_then(|bytes| bytes.checked_sub(self.padding.into()))
+            .expect("Number of bytes should not overflow a `usize`")
     }
 }
 
@@ -179,17 +260,18 @@ impl<'bytes> From<U32ByteSlice<'bytes>> for &'bytes [u8] {
         unsafe {
             NonNull::slice_from_raw_parts(
                 NonNull::from(value.bytes).as_non_null_ptr().cast(),
-                mem::size_of_val(value.bytes),
+                value.len_bytes(),
             )
             .as_ref()
         }
     }
 }
 
-impl<'bytes> From<U32ByteSlice<'bytes>> for &'bytes [u32] {
+impl<'bytes> TryFrom<U32ByteSlice<'bytes>> for &'bytes [u32] {
+    type Error = ();
     #[inline]
-    fn from(value: U32ByteSlice<'bytes>) -> Self {
-        value.bytes
+    fn try_from(value: U32ByteSlice<'bytes>) -> Result<Self, Self::Error> {
+        (value.padding == 0).then_some(value.bytes).ok_or(())
     }
 }
 

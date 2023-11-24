@@ -109,6 +109,7 @@ pub struct HigherLevel<'node> {
 
 /// Errors from parsing a node into a `HigherLevel` Cache
 #[non_exhaustive]
+#[derive(Debug)]
 pub enum HigherLevelError {
     /// The compatible field of the node is either missing or not equal to `"cache"`
     BadType,

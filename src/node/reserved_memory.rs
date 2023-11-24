@@ -4,8 +4,10 @@
 
 use alloc::rc::Rc;
 
+use super::root::NodeNames;
 use super::{ChildMap, DeviceNode, PropertyMap, RawNode, RawNodeError};
 use crate::map::Map;
+use crate::node_name::NameRef;
 use crate::{node::PropertyKeys, split_at_first};
 use core::{ffi::CStr, num::NonZeroU8};
 use core::{fmt, str};
@@ -135,6 +137,13 @@ pub enum Error {
     Child(super::Error),
 }
 
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RootError {
+    Child(Error),
+    CellsMismatch,
+}
+
 impl<'node> Node<'node> {
     /// Parses the given raw node into a reserved memory node
     pub(crate) fn new(
@@ -229,6 +238,37 @@ impl<'node> Node<'node> {
             properties,
             children,
         })
+    }
+
+    /// Parses the parent `/reserved-memory` node and returns all the associated reserved memory
+    pub(super) fn parse_parent(
+        mut parent: RawNode<'node>,
+        address_cells: u8,
+        size_cells: NonZeroU8,
+        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
+    ) -> Result<Map<NameRef<'node>, Self>, RootError> {
+        // #address-cells and #size-cells should use the same values as for the root node, and ranges should be empty so that address translation logic works correctly.
+        let (reserved_memory_addr_cells, reserved_memory_size_cells) = parent.extract_cell_counts();
+
+        if !(reserved_memory_addr_cells.is_ok_and(|cells| cells == address_cells)
+            && reserved_memory_size_cells.is_ok_and(|cells| cells == size_cells.get())
+            && parent
+                .properties
+                .remove(PropertyKeys::RANGES)
+                .is_some_and(|ranges| ranges.is_empty()))
+        {
+            return Err(RootError::CellsMismatch);
+        }
+
+        parent
+            .children
+            .into_iter()
+            .map(|(name, node)| {
+                Node::new(node, address_cells, size_cells, phandles)
+                    .map(|reserved_node| (name, reserved_node))
+            })
+            .try_collect()
+            .map_err(RootError::Child)
     }
 }
 

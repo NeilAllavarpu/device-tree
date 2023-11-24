@@ -1,5 +1,6 @@
 //! The root node of the device tree. All nodes are descendants of this.
 
+use super::chosen::{Chosen, ChosenError};
 use super::{cache::HigherLevel, cpu, memory_region, reserved_memory, RawNode, RawNodeError};
 use super::{ChildMap, DeviceNode, PropertyMap};
 use crate::property::{ChassisError, ChassisType};
@@ -11,6 +12,7 @@ use crate::{
 };
 use alloc::rc::Rc;
 use core::ffi::CStr;
+use core::mem;
 use core::num::NonZeroU8;
 
 /// The base of the device tree that all nodes are children of
@@ -33,7 +35,7 @@ pub struct Node<'node> {
     /// The operating system shall exclude reserved memory from normal usage.
     /// One can create child nodes describing particular reserved (excluded from normal use) memory regions.
     /// Such memory regions are usually designed for the special usage by various device drivers.
-    reserved_memory: Map<NameRef<'node>, reserved_memory::Node<'node>>,
+    reserved_memory: Option<Map<NameRef<'node>, reserved_memory::Node<'node>>>,
     /// A memory device node is required for all devicetrees and describes the physical memory layout for the system.
     /// If a system has multiple ranges of memory, multiple memory nodes can be created, or the ranges can be specified in the reg property of a single memory node.
     ///
@@ -59,6 +61,7 @@ pub struct Node<'node> {
     properties: PropertyMap<'node>,
     /// Children nodes of the root
     children: ChildMap<'node>,
+    pub(super) chosen: Option<Chosen<'node>>,
 }
 
 impl<'node> Node<'node> {
@@ -67,6 +70,48 @@ impl<'node> Node<'node> {
     #[inline]
     pub const fn cpus(&self) -> &Map<u32, Rc<cpu::Node<'node>>> {
         &self.cpus
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn model(&self) -> &Model<'node> {
+        &self.model
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn compatible(&self) -> &[Model<'_>] {
+        &self.compatible
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn serial_number(&self) -> Option<&CStr> {
+        self.serial_number
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn chassis(&self) -> Option<&ChassisType> {
+        self.chassis.as_ref()
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn higher_caches(&self) -> &Map<u32, Rc<HigherLevel<'node>>> {
+        &self.higher_caches
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn memory(&self) -> &[MemoryRegion<'_>] {
+        &self.memory
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn phandles(&self) -> &Map<u32, Rc<DeviceNode<'node>>> {
+        &self.phandles
     }
 }
 
@@ -80,10 +125,10 @@ pub enum NodeError<'node> {
     Compatible,
     /// The serial number is invalid
     SerialNumber,
-    /// The parent node for CPU nodes is invalid
+    /// The parent node for CPU nodes is missing
     CpuRoot,
-    /// A CPU node is invalid
-    Cpu(cpu::NodeError),
+    /// Parsing CPUs failed
+    Cpu(cpu::RootError),
     /// Matching a reg field to the unit name failed
     RegMismatch(Option<u64>, u64),
     /// A cache node is invalid
@@ -93,7 +138,7 @@ pub enum NodeError<'node> {
     /// The parent node for reserved memory is invalid
     ReservedMemoryRoot,
     /// A reserved memory node is invalid
-    ReservedMemory(reserved_memory::Error),
+    ReservedMemory(reserved_memory::RootError),
     /// A memory region is invalid
     Memory(memory_region::Error),
     /// The type of a node was invalid
@@ -101,10 +146,11 @@ pub enum NodeError<'node> {
     Child(super::Error),
     Chassis(ChassisError<'node>),
     Alias,
+    Chosen(ChosenError<'node>),
 }
 
 /// "Constants" for various node names
-struct NodeNames;
+pub(super) struct NodeNames;
 
 impl NodeNames {
     /// The node name for the CPUs parent node
@@ -113,7 +159,7 @@ impl NodeNames {
     }
 
     /// The prefix for CPU nodes' names
-    fn cpu_prefix() -> &'static NameSlice {
+    pub(super) fn cpu_prefix() -> &'static NameSlice {
         <&NameSlice>::try_from(b"cpu".as_slice()).expect("Should be a valid name")
     }
     /// The node name for memory nodes
@@ -122,16 +168,113 @@ impl NodeNames {
     }
 
     /// The node name for reserved memory nodes
-    fn reserved_memory() -> NameRef<'static> {
+    pub(super) fn reserved_memory() -> NameRef<'static> {
         NameRef::try_from(b"reserved-memory".as_slice()).expect("Should be a valid name")
     }
 
-    /// The node names for the alias node
+    /// The node name for the alias node
     fn aliases() -> NameRef<'static> {
         b"aliases"
             .as_slice()
             .try_into()
             .expect("Should be a valid name")
+    }
+
+    /// The node name for the chosen node
+    fn chosen() -> NameRef<'static> {
+        b"chosen".as_slice().try_into().unwrap()
+    }
+}
+
+/// Parses the root `/aliases` node and returns a map that converts a name into a reference to the resolved node
+fn parse_aliases<'node>(
+    aliases_node: Option<RawNode<'node>>,
+    root: &'node Node<'node>,
+) -> Map<NameRef<'node>, Rc<DeviceNode<'node>>> {
+    aliases_node.map_or_else(Map::new, |aliases| {
+        aliases
+            .properties
+            .into_iter()
+            .filter_map(|(name, path)| {
+                NameRef::try_from(name.to_bytes()).ok().zip(
+                    CStr::from_bytes_until_nul(path.into())
+                        .ok()
+                        .and_then(|c_path| {
+                            use super::Node;
+                            let entry = root.find_str(c_path.to_bytes());
+                            if entry.is_none() {
+                                eprintln!(
+                                    "WARNING: Could not match {} to {}",
+                                    name.to_string_lossy(),
+                                    c_path.to_string_lossy()
+                                );
+                            }
+                            entry
+                        }),
+                )
+            })
+            .collect()
+    })
+}
+
+impl<'node> super::Node<'node> for Node<'node> {
+    #[inline]
+    fn properties(&self) -> &PropertyMap {
+        &self.properties
+    }
+
+    #[inline]
+    fn children(&self) -> &ChildMap<'node> {
+        &self.children
+    }
+
+    #[inline]
+    fn find<'path>(
+        &'node self,
+        direct_child_name: NameRef<'path>,
+        mut rest_path: impl Iterator<Item = NameRef<'path>>,
+    ) -> Option<Rc<DeviceNode<'node>>>
+    where
+        'path: 'node,
+    {
+        let grandchild_name_opt = rest_path.next();
+        let entry = if direct_child_name == NodeNames::reserved_memory() {
+            let Some(ref reserved_memory) = self.reserved_memory else {
+                todo!()
+            };
+            grandchild_name_opt
+                                    .and_then(|grandchild_name| {
+                                        reserved_memory.get(&grandchild_name).and_then(|grandchild| {
+                                            rest_path.next().map_or_else(|| {
+                                                eprintln!("WARNING: References to non-plain device nodes are not currently supported: /{direct_child_name}/{grandchild_name}");
+                                                None
+                                            }, |great_grandchild_name| {
+                                                grandchild.find(great_grandchild_name, rest_path)
+                                            })
+                                        })
+                                    })
+        } else {
+            self.children
+                .get(&direct_child_name)
+                .and_then(|direct_child| {
+                    grandchild_name_opt.map_or(Some(Rc::clone(direct_child)), |grandchild_name| {
+                        direct_child.find(grandchild_name, rest_path)
+                    })
+                })
+        };
+        // unsafe { mem::transmute(entry) }
+        entry
+        // entry.map(|rc| {
+        //     // This unsafe code bypasses the lifetime limitations of `DeviceNode` and the original `children` map not living long enough before the function returns
+        //     let rc_pointer = Rc::into_raw(rc);
+        //     let rc_pointer = rc_pointer.cast::<DeviceNode<'node>>();
+        //     // SAFETY:
+        //     // * This raw pointer came from the `Rc::into_raw` call above
+        //     // * `DeviceNode` always has the same size and alignment of itself
+        //     // * It is valid to perform this semi-transmute because the lifetime of all `DeviceNode`s are tied to the lifetime of the underlying bytes of the device tree blob itself, and this `Root`` also cannot last longer than that.
+        //     // So the lifetime of the new `DeviceNode` cannot outlive the data that it borrows from
+        //     unsafe { Rc::from_raw(rc_pointer) }
+        // })
     }
 }
 
@@ -169,73 +312,28 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
         );
         let size_cells = NonZeroU8::new(size_cells).ok_or(NodeError::Cells(CellError::Invalid))?;
 
-        let mut cpus_root = value
-            .children
-            .remove(&NodeNames::cpus())
-            .ok_or(NodeError::CpuRoot)?;
+        let (cpus, caches) = cpu::Node::parse_parent(
+            value
+                .children
+                .remove(&NodeNames::cpus())
+                .ok_or(NodeError::CpuRoot)?,
+            &mut phandles,
+        )
+        .map_err(NodeError::Cpu)?;
 
-        let (Ok(cpu_addr_cells), Ok(0)) = cpus_root.extract_cell_counts() else {
-            return Err(NodeError::CpuRoot);
-        };
-        let cpu_addr_cells = NonZeroU8::new(cpu_addr_cells).ok_or(NodeError::CpuRoot)?;
-
-        let caches = cpus_root
-            .children
-            .extract_if(|name, _| !name.node_name().starts_with(NodeNames::cpu_prefix()))
-            .map(|(_, node)| {
-                HigherLevel::new(node, &mut phandles)
-                    .map(|(phandle, cache)| (phandle, Rc::new(cache)))
-                    .map_err(|_err| NodeError::Cache)
-            })
-            .try_collect()?;
-
-        let cpus = cpus_root
-            .children
-            .into_iter()
-            .map(|(name, node)| {
-                let node = Rc::new(
-                    cpu::Node::new(node, &cpus_root.properties, &caches, cpu_addr_cells)
-                        .map_err(NodeError::Cpu)?,
-                );
-
-                if name
-                    .unit_address()
-                    .is_some_and(|address| address != node.reg.into())
-                {
-                    return Err(NodeError::RegMismatch(name.unit_address(), node.reg.into()));
-                }
-                Ok((node.reg, node))
-            })
-            .try_collect()?;
-
-        let mut reserved_memory_root = value
+        let reserved_memory = value
             .children
             .remove(&NodeNames::reserved_memory())
-            .ok_or(NodeError::ReservedMemoryRoot)?;
-
-        // #address-cells and #size-cells should use the same values as for the root node, and ranges should be empty so that address translation logic works correctly.
-        let (reserved_memory_addr_cells, reserved_memory_size_cells) =
-            reserved_memory_root.extract_cell_counts();
-
-        if !(reserved_memory_addr_cells.is_ok_and(|cells| cells == address_cells)
-            && reserved_memory_size_cells.is_ok_and(|cells| cells == size_cells.get())
-            && reserved_memory_root
-                .properties
-                .remove(PropertyKeys::RANGES)
-                .is_some_and(|ranges| ranges.is_empty()))
-        {
-            return Err(NodeError::ReservedMemoryRoot);
-        }
-
-        let reserved_memory: Map<_, _> = reserved_memory_root
-            .children
-            .into_iter()
-            .map(|(name, node)| {
-                reserved_memory::Node::new(node, address_cells, size_cells, &mut phandles)
-                    .map(|reserved_node| (name, reserved_node))
+            .map(|reserved_root| {
+                reserved_memory::Node::parse_parent(
+                    reserved_root,
+                    address_cells,
+                    size_cells,
+                    &mut phandles,
+                )
+                .map_err(NodeError::ReservedMemory)
             })
-            .try_collect()
-            .map_err(NodeError::ReservedMemory)?;
+            .transpose()?;
 
         let memory = value
             .children
@@ -255,6 +353,8 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
 
         let aliases_node = value.children.remove(&NodeNames::aliases());
 
+        let chosen_node = value.children.remove(&NodeNames::chosen());
+
         let (properties, children) = value.into_components(&mut phandles);
         let children: Map<NameRef<'node>, Rc<DeviceNode<'node>>> = match children {
             Ok(children) => children,
@@ -262,71 +362,9 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             Err(RawNodeError::Child(child)) => return Err(NodeError::Child(child)),
         };
 
-        let aliases = aliases_node.map_or_else(Map::new, |aliases| {
-            aliases
-                .properties
-                .into_iter()
-                .filter_map(|(name, path)| {
-                    // println!("{name:?}: {path:?}");
-                    NameRef::try_from(name.to_bytes()).ok().zip(
-                        CStr::from_bytes_until_nul(path.into())
-                            .ok()
-                            .and_then(|c_path| {
-                                use crate::node::Node;
-                                let mut names = c_path
-                                    .to_bytes()
-                                    .split(|&char| char == b'/')
-                                    .filter(|x| !x.is_empty())
-                                    .filter_map(|x| NameRef::try_from(x).ok());
-                                let direct_child_name = names.next()?;
-
-                                let grandchild_name_opt = names
-                                .next();
-
-                                let entry = if direct_child_name == NodeNames::reserved_memory() {
-                                    grandchild_name_opt
-                                        .and_then(|grandchild_name| {
-                                            reserved_memory.get(&grandchild_name)
-                                        })
-                                        .and_then(|grandchild| {
-                                            names.next().map_or_else(|| {
-                                                eprintln!("WARNING: References to non-plain device nodes are not currently supported: {}", c_path.to_string_lossy());
-                                                None
-                                            }, |great_grandchild_name| {
-                                                grandchild.find(great_grandchild_name, names)
-                                            })
-                                        })
-                                } else {
-                                    children.get(&direct_child_name).and_then(|direct_child| {
-                                        grandchild_name_opt.map_or(Some(direct_child), |grandchild_name| {
-                                            direct_child.find(grandchild_name, names)
-                                        })
-                                    })
-                                };
-                                let entry = entry.map(|rc| {
-                                    // This unsafe code bypasses the lifetime limitations of `DeviceNode` and the original `children` map not living long enough before the function returns
-                                    let rc_pointer = Rc::into_raw(Rc::clone(rc));
-                                    let rc_pointer = rc_pointer.cast::<DeviceNode<'node>>();
-                                    // SAFETY:
-                                    // * This raw pointer came from the `Rc::into_raw` call above
-                                    // * `DeviceNode` always has the same size and alignment of itself
-                                    // * It is valid to perform this semi-transmute because the lifetime of all `DeviceNode`s are tied to the lifetime of the underlying bytes of the device tree blob itself, and this `Root`` also cannot last longer than that.
-                                    // So the lifetime of the new `DeviceNode` cannot outlive the data that it borrows from
-                                    unsafe { Rc::from_raw(rc_pointer) }
-                                });
-                                if entry.is_none() {
-                                    eprintln!("WARNING: Could not match {} to {}", name.to_string_lossy(), c_path.to_string_lossy());
-                                }
-                                entry
-                            }),
-                    )
-                })
-                .collect()
-        });
-
-        Ok(Self {
+        let mut root = Self {
             phandles,
-            aliases,
+            aliases: Map::new(),
             model,
             compatible,
             serial_number,
@@ -337,6 +375,21 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             higher_caches: caches,
             properties,
             children,
-        })
+            chosen: None,
+        };
+
+        let aliases = parse_aliases(aliases_node, &root);
+        root.aliases = unsafe { mem::transmute(aliases) };
+        root.chosen = chosen_node
+            .map(|chosen| Chosen::from_node(chosen, &root).map_err(NodeError::Chosen))
+            .map(|x| unsafe { mem::transmute(x) })
+            .transpose()?;
+        // let chosen = chosen_node
+        //     .map(|chosen| Chosen::from_node(chosen, &root))
+        //     .transpose()
+        //     .map_err(NodeError::Chosen)?;
+        // root.chosen = unsafe { mem::transmute(chosen) };
+
+        Ok(root)
     }
 }

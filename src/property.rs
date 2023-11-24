@@ -182,7 +182,7 @@ impl<'prop> EnableMethod<'prop> {
         properties
             .remove(PropertyKeys::ENABLE_METHOD)
             .ok_or(EnableMethodError::NotPresent)
-            .and_then(|bytes| <&CStr>::try_from(bytes).map_err(|_| EnableMethodError::Invalid))
+            .and_then(|bytes| <&CStr>::try_from(bytes).map_err(|_err| EnableMethodError::Invalid))
             .and_then(|method| match method.to_bytes() {
                 b"spin-table" => Ok(EnableMethod::SpinTable({
                     properties
@@ -206,6 +206,7 @@ impl<'prop> EnableMethod<'prop> {
 
 /// Specifies a string that identifies the form-factor of the system.
 #[derive(Debug)]
+#[expect(clippy::missing_docs_in_private_items, reason = "Self explanatory")]
 pub enum ChassisType {
     Desktop,
     Laptop,
@@ -217,6 +218,7 @@ pub enum ChassisType {
     Embedded,
 }
 
+/// Errors from parsing the chassis field on a root node
 #[derive(Debug)]
 pub enum ChassisError<'bytes> {
     /// Error converting the bytes into a C string
@@ -244,55 +246,3 @@ impl<'bytes> TryFrom<U32ByteSlice<'bytes>> for ChassisType {
             })
     }
 }
-
-// Various properties that a `Node` may have.
-//
-// Not all properties may be present in any given `Node`
-// #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-// pub enum Property {
-//     /// The compatible property value consists of one or more strings that define the specific programming model for the device. This list of strings should be used by a client program for device driver selection. The property value consists of a concatenated list of null terminated strings, from most specific to most general. They allow a device to express its compatibility with a family of similar devices, potentially allowing a single device driver to match against several devices.
-//     ///
-//     /// The recommended format is "manufacturer,model", where manufacturer is a string describing the name of the manufacturer (such as a stock ticker symbol), and model specifies the model number.
-//     ///
-//     /// The compatible string should consist only of lowercase letters, digits and dashes, and should start with a letter.
-//     ///
-//     /// A single comma is typically only used following a vendor prefix. Underscores should not be used.
-//     ///
-//     /// Example:
-//     ///
-//     ///     compatible = "fsl,mpc8641", "ns16550";
-//     ///
-//     /// In this example, an operating system would first try to locate a device driver that supported fsl,mpc8641. If a
-//     /// driver was not found, it would then try to locate a driver that supported the more general ns16550 device type.
-//     // Compatible(ModelList),
-
-//     /// The phandle property specifies a numerical identifier for a node that is unique within the devicetree. The phandle property value is used by other nodes that need to refer to the node associated with the property.
-//     PHandle(U32),
-//     /// The #address-cells and #size-cells properties may be used in any device node that has children in the devicetree hierarchy and describes how child device nodes should be addressed. The #address-cells property defines the number of <u32> cells used to encode the address field in a child node’s reg property. The #size-cells property defines the number of <u32> cells used to encode the size field in a child node’s reg property.
-//     ///
-//     /// The #address-cells and #size-cells properties are not inherited from ancestors in the devicetree. They shall be explicitly defined.
-//     ///
-//     /// A DTSpec-compliant boot program shall supply #address-cells and #size-cells on all nodes that have children.
-//     ///
-//     /// If missing, a client program should assume a default value of 2 for #address-cells, and a value of 1 for #size-cells.
-//     AddressCells(U32),
-//     SizeCells(U32),
-//     /// Specifies a string representing the device’s serial number.
-//     SerialNumber(String),
-//     /// A string that specifies the boot arguments for the client program. The value could potentially be a null string if no boot arguments are required.
-//     BootArgs(String),
-//     /// The device_type property was used in IEEE 1275 to describe the device’s FCode programming model. Because DTSpec does not have FCode, new use of the property is deprecated, and it should be included only on cpu and memory nodes for compatibility with IEEE 1275–derived devicetrees.
-//     DeviceType(String),
-//     /// The status property indicates the operational status of a device. The lack of a status property should be treated as if the property existed with the value of "okay".
-//     // Status(Status),
-//     /// Describes the method by which a CPU in a disabled state is enabled. This property is required for CPUs with a status property with a value of "disabled". The value consists of one or more strings that define the method to release this CPU. If a client program recognizes any of the methods, it may use it.
-//     // EnableMethod(EnableType),
-//     /// The cpu-release-addr property is required for cpu nodes that have an enable-method property value of "spin-table". The value specifies the physical address of a spin table entry that releases a secondary CPU from its spin loop.
-//     ReleaseAddr(U64),
-//     RegRaw(Box<[u8]>),
-//     Reg(Box<[u8]>),
-//     Range(Range),
-//     InterruptParent(U32),
-//     /// Fallthrough case for unhandled/nonstandard property types
-//     Other(Box<str>, Box<[u8]>),
-// }

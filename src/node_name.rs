@@ -1,3 +1,5 @@
+//! Node name parsing. The specification limits the valid characters in a name beyond just ASCII, and these structs enforce this restriction.
+
 use core::ascii;
 use core::borrow::Borrow;
 use core::fmt;
@@ -154,6 +156,13 @@ impl<'chars> From<&'chars NameSlice> for &'chars [ascii::Char] {
         // SAFETY: The lifetime of the new shared reference is tied to that of the old shared reference guaranteeing aliasing rules
         // and the pointer is valid because it was derived from a valid value
         unsafe { pointer.as_ref() }.expect("Pointer should be derived from a non-null reference")
+    }
+}
+
+impl<'chars> From<&'chars NameSlice> for &'chars str {
+    #[inline]
+    fn from(value: &'chars NameSlice) -> Self {
+        <&[ascii::Char]>::from(value).as_str()
     }
 }
 

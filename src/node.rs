@@ -1,3 +1,5 @@
+//! The various types of nodes possible. The generic type is a `DeviceNode`, used as a catch-all, and specific types are parsed into their respective structs. The `Node` trait provides a broad, but common, interface to allow interoperability of the different types of nodes.
+
 use crate::map::Map;
 use crate::node_name::NameRef;
 
@@ -11,6 +13,7 @@ use alloc::rc::Rc;
 use core::ffi::CStr;
 
 pub mod cache;
+pub mod chosen;
 pub mod cpu;
 pub mod memory_region;
 pub mod reserved_memory;
@@ -50,6 +53,9 @@ impl PropertyKeys {
     pub const CACHE_UNIFIED: &'static CStr = to_c_str(b"cache-unified\0");
     pub const NEXT_LEVEL_CACHE: &'static CStr = to_c_str(b"next-level-cache\0");
     pub const ENABLE_METHOD: &'static CStr = to_c_str(b"enable-method\0");
+    const BOOTARGS: &'static CStr = to_c_str(b"bootargs\0");
+    const STDIN_PATH: &'static CStr = to_c_str(b"stdin-path\0");
+    const STDOUT_PATH: &'static CStr = to_c_str(b"stdout-path\0");
 }
 
 /// A Device Tree Node
@@ -175,15 +181,30 @@ pub trait Node<'node> {
         &'node self,
         sub_path: NameRef<'path>,
         mut rest_path: impl Iterator<Item = NameRef<'path>>,
-    ) -> Option<&'node Rc<DeviceNode<'node>>>
+    ) -> Option<Rc<DeviceNode<'node>>>
     where
         'path: 'node,
     {
         self.children().get(&sub_path).and_then(|node| {
-            rest_path
-                .next()
-                .map_or(Some(node), |next_path| node.find(next_path, rest_path))
+            rest_path.next().map_or_else(
+                || Some(Rc::clone(node)),
+                |next_path| node.find(next_path, rest_path),
+            )
         })
+    }
+
+    #[inline]
+    fn find_str<'path>(&'node self, path: &'node [u8]) -> Option<Rc<DeviceNode<'node>>>
+    where
+        'path: 'node,
+    {
+        let mut names = path
+            .split(|&char| char == b'/')
+            .filter(|x| !x.is_empty())
+            .map(|x| NameRef::try_from(x).unwrap());
+
+        let direct_child_name = names.next()?;
+        self.find(direct_child_name, names)
     }
 }
 
@@ -346,5 +367,35 @@ impl<'node> DeviceNode<'node> {
             };
         }
         Ok(node)
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn compatible(&self) -> Option<&[Model<'_>]> {
+        self.compatible.as_deref()
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn model(&self) -> Option<&Model<'_>> {
+        self.model.as_ref()
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn reg(&self) -> Option<&[[u64; 2]]> {
+        self.reg.as_deref()
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn ranges(&self) -> Option<&[Range]> {
+        self.ranges.as_deref()
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn status(&self) -> &Status<'node> {
+        &self.status
     }
 }

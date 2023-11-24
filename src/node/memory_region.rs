@@ -68,7 +68,7 @@ impl<'node> MemoryRegion<'node> {
         if !node
             .properties
             .remove(PropertyKeys::DEVICE_TYPE)
-            .is_some_and(|x| <&[u8]>::from(x) == b"memory\0\0")
+            .is_some_and(|x| <&[u8]>::from(x) == b"memory\0")
         {
             return Err(Error::Type);
         }

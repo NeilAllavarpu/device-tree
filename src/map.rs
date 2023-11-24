@@ -1,3 +1,5 @@
+//! Space-efficient maps, designed for primarily immutable access. These maps are stored as sorted arrays and looked up via binary search, so that elements can be as packed together as possible to minimize space usage
+
 use alloc::vec;
 use core::borrow::Borrow;
 use core::fmt::{self, Debug, Formatter};
@@ -91,14 +93,6 @@ impl<K: Ord, V> Map<K, V> {
     /// Returns `true` if the map contains no entries
     pub fn is_empty(&self) -> bool {
         self.contents.is_empty()
-    }
-}
-
-impl<K: Ord + Debug, V> Map<K, V> {
-    pub fn pkeys(&self) {
-        for (a, b) in &self.contents {
-            println!("{:?}", a);
-        }
     }
 }
 
