@@ -4,7 +4,7 @@ use alloc::rc::Rc;
 
 use crate::parse::U32ByteSlice;
 
-use super::{root, DeviceNode, Node, PropertyKeys, PropertyMap, RawNode};
+use super::{device, root, Node, PropertyKeys, PropertyMap, RawNode};
 
 /// The `Chosen` node does not represent a real device in the system but describes parameters chosen or specified by the system firmware at run time.
 #[derive(Debug)]
@@ -13,9 +13,9 @@ pub struct Chosen<'node> {
     /// The value could potentially be a null string if no boot arguments are required.
     boot_args: Option<&'node CStr>,
     /// The node representing the device to be used for boot console output.
-    stdout: Option<Rc<DeviceNode<'node>>>,
+    stdout: Option<Rc<device::DeviceNode<'node>>>,
     /// The node representing the device to be used for boot console input.
-    stdin: Option<Rc<DeviceNode<'node>>>,
+    stdin: Option<Rc<device::DeviceNode<'node>>>,
     /// Any other properties under the `Chosen` node
     miscellaneous: PropertyMap<'node>,
 }
@@ -44,7 +44,7 @@ impl<'node> Chosen<'node> {
             properties: &mut PropertyMap<'root>,
             property_key: &CStr,
             root: &'root root::Node<'root>,
-        ) -> Result<Option<Rc<DeviceNode<'root>>>, ChosenError<'root>> {
+        ) -> Result<Option<Rc<device::DeviceNode<'root>>>, ChosenError<'root>> {
             properties
                 .remove(property_key)
                 .map(|bytes| {
@@ -86,13 +86,13 @@ impl<'node> Chosen<'node> {
 
     #[must_use]
     #[inline]
-    pub const fn stdout(&self) -> Option<&Rc<DeviceNode<'_>>> {
+    pub const fn stdout(&self) -> Option<&Rc<device::DeviceNode<'_>>> {
         self.stdout.as_ref()
     }
 
     #[must_use]
     #[inline]
-    pub const fn stdin(&self) -> Option<&Rc<DeviceNode<'_>>> {
+    pub const fn stdin(&self) -> Option<&Rc<device::DeviceNode<'_>>> {
         self.stdin.as_ref()
     }
 

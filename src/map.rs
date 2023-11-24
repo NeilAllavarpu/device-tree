@@ -8,6 +8,7 @@ use core::mem;
 /// A map from keys to values, implemented as a sorted array
 ///
 /// The map is intended to be formed once and then only viewed, not modified actively, so that this format is efficient.
+#[derive(Clone)]
 pub struct Map<K: Ord, V> {
     /// The contents of this map, sorted by key
     contents: Vec<(K, V)>,
@@ -130,5 +131,13 @@ impl<K: Ord, V> FromIterator<(K, V)> for Map<K, V> {
         let mut contents: Vec<_> = iter.into_iter().collect();
         contents.sort_unstable_by(|&(ref key1, _), &(ref key2, _)| key1.cmp(key2));
         Self { contents }
+    }
+}
+
+impl<K: Ord, V> Default for Map<K, V> {
+    fn default() -> Self {
+        Self {
+            contents: Vec::default(),
+        }
     }
 }

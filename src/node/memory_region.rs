@@ -5,14 +5,18 @@ use core::{ffi::CStr, num::NonZeroU32};
 
 /// An initially mapped area of memory provided by the bootloader.
 /// Indicates a translation from effective addresses to physical address
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "This is the format specified by the DTSpec"
+)]
 pub struct InitialMappedArea {
     /// The effective (virtual) address of this mapping
-    effective_address: u64,
+    pub effective_address: u64,
     /// The physical address corresponding to this mapping
-    physical_address: u64,
+    pub physical_address: u64,
     /// The size of the mapping
-    size: NonZeroU32,
+    pub size: NonZeroU32,
 }
 
 impl TryFrom<U32ByteSlice<'_>> for InitialMappedArea {

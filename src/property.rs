@@ -72,11 +72,11 @@ impl<'bytes> TryFrom<U32ByteSlice<'bytes>> for Box<[Model<'bytes>]> {
 #[derive(Debug)]
 pub struct Range {
     /// The `child-bus-address` is a physical address within the child bus’ address space.
-    pub(crate) child_address: u64,
+    pub child_address: u64,
     /// `The parent-bus-address` is a physical address within the parent bus’ address space.
-    pub(crate) parent_address: u64,
+    pub parent_address: u64,
     /// The `length` specifies the size of the range in the child’s address space.
-    pub(crate) length: u64,
+    pub length: u64,
 }
 
 impl From<[u64; 3]> for Range {

@@ -5,7 +5,7 @@
 use alloc::rc::Rc;
 
 use super::root::NodeNames;
-use super::{ChildMap, DeviceNode, PropertyMap, RawNode, RawNodeError};
+use super::{device, ChildMap, PropertyMap, RawNode, RawNodeError};
 use crate::map::Map;
 use crate::node_name::NameRef;
 use crate::{node::PropertyKeys, split_at_first};
@@ -134,7 +134,7 @@ pub enum Error {
     /// Error parsing the compatibility field
     Compatible,
     /// Error parsing a child
-    Child(super::Error),
+    Child(device::Error),
 }
 
 #[derive(Debug)]
@@ -150,7 +150,7 @@ impl<'node> Node<'node> {
         mut value: RawNode<'node>,
         address_cells: u8,
         size_cells: NonZeroU8,
-        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
+        phandles: &mut Map<u32, Rc<device::DeviceNode<'node>>>,
     ) -> Result<Self, Error> {
         let size = value
             .properties
@@ -245,7 +245,7 @@ impl<'node> Node<'node> {
         mut parent: RawNode<'node>,
         address_cells: u8,
         size_cells: NonZeroU8,
-        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
+        phandles: &mut Map<u32, Rc<device::DeviceNode<'node>>>,
     ) -> Result<Map<NameRef<'node>, Self>, RootError> {
         // #address-cells and #size-cells should use the same values as for the root node, and ranges should be empty so that address translation logic works correctly.
         let (reserved_memory_addr_cells, reserved_memory_size_cells) = parent.extract_cell_counts();

@@ -10,8 +10,9 @@ use core::{ffi::CStr, num::NonZeroU8};
 
 use super::{
     cache::{HigherLevel, HigherLevelError, L1},
+    device,
     root::NodeNames,
-    DeviceNode, PropertyKeys, RawNode,
+    PropertyKeys, RawNode,
 };
 
 /// Status of a CPU as indicated by the node
@@ -170,7 +171,7 @@ impl<'node> Node<'node> {
     /// Parses the parent CPU node and returns a map describing all the children CPU nodes + caches, or returns an error
     pub(super) fn parse_parent(
         mut parent: RawNode<'node>,
-        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
+        phandles: &mut Map<u32, Rc<device::DeviceNode<'node>>>,
     ) -> Result<(Map<u32, Rc<Self>>, Map<u32, Rc<HigherLevel<'node>>>), RootError> {
         let (Ok(cpu_addr_cells), Ok(0)) = parent.extract_cell_counts() else {
             return Err(RootError::Reg);

@@ -30,6 +30,7 @@
     clippy::big_endian_bytes,
     reason = "Correctly used for big endian data"
 )]
+#![expect(clippy::pub_with_shorthand, reason = "Desired code style")]
 #![expect(clippy::missing_trait_methods, reason = "Desired code style")]
 #![expect(clippy::blanket_clippy_restriction_lints, reason = "Paranoid linting")]
 #![expect(clippy::implicit_return, reason = "Desired format")]

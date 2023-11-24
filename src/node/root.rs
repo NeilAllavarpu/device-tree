@@ -2,7 +2,7 @@
 
 use super::chosen::{Chosen, ChosenError};
 use super::{cache::HigherLevel, cpu, memory_region, reserved_memory, RawNode, RawNodeError};
-use super::{ChildMap, DeviceNode, PropertyMap};
+use super::{device, ChildMap, PropertyMap};
 use crate::property::{ChassisError, ChassisType};
 use crate::{
     map::Map,
@@ -54,14 +54,15 @@ pub struct Node<'node> {
     /// The property name specifies the alias name.
     /// The property value specifies the full path to a node in the devicetree.
     /// For example, the property `serial0 = "/simple-bus@fe000000/ serial@llc500"` defines the alias `serial0`.
-    aliases: Map<NameRef<'node>, Rc<DeviceNode<'node>>>,
+    aliases: Map<NameRef<'node>, Rc<device::DeviceNode<'node>>>,
     /// Map of phandles to nodes
-    phandles: Map<u32, Rc<DeviceNode<'node>>>,
+    phandles: Map<u32, Rc<device::DeviceNode<'node>>>,
     /// The remainder of this node's properties
     properties: PropertyMap<'node>,
     /// Children nodes of the root
     children: ChildMap<'node>,
-    pub(super) chosen: Option<Chosen<'node>>,
+    /// Runtime parameters
+    chosen: Option<Chosen<'node>>,
 }
 
 impl<'node> Node<'node> {
@@ -110,8 +111,14 @@ impl<'node> Node<'node> {
 
     #[must_use]
     #[inline]
-    pub const fn phandles(&self) -> &Map<u32, Rc<DeviceNode<'node>>> {
+    pub const fn phandles(&self) -> &Map<u32, Rc<device::DeviceNode<'node>>> {
         &self.phandles
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn chosen(&self) -> Option<&Chosen<'node>> {
+        self.chosen.as_ref()
     }
 }
 
@@ -143,7 +150,7 @@ pub enum NodeError<'node> {
     Memory(memory_region::Error),
     /// The type of a node was invalid
     Type,
-    Child(super::Error),
+    Child(device::Error),
     Chassis(ChassisError<'node>),
     Alias,
     Chosen(ChosenError<'node>),
@@ -182,7 +189,10 @@ impl NodeNames {
 
     /// The node name for the chosen node
     fn chosen() -> NameRef<'static> {
-        b"chosen".as_slice().try_into().unwrap()
+        b"chosen"
+            .as_slice()
+            .try_into()
+            .expect("Should be a valid name")
     }
 }
 
@@ -190,7 +200,7 @@ impl NodeNames {
 fn parse_aliases<'node>(
     aliases_node: Option<RawNode<'node>>,
     root: &'node Node<'node>,
-) -> Map<NameRef<'node>, Rc<DeviceNode<'node>>> {
+) -> Map<NameRef<'node>, Rc<device::DeviceNode<'node>>> {
     aliases_node.map_or_else(Map::new, |aliases| {
         aliases
             .properties
@@ -233,26 +243,24 @@ impl<'node> super::Node<'node> for Node<'node> {
         &'node self,
         direct_child_name: NameRef<'path>,
         mut rest_path: impl Iterator<Item = NameRef<'path>>,
-    ) -> Option<Rc<DeviceNode<'node>>>
+    ) -> Option<Rc<device::DeviceNode<'node>>>
     where
         'path: 'node,
     {
         let grandchild_name_opt = rest_path.next();
         let entry = if direct_child_name == NodeNames::reserved_memory() {
-            let Some(ref reserved_memory) = self.reserved_memory else {
-                todo!()
-            };
+            let reserved_memory = self.reserved_memory.as_ref()?;
             grandchild_name_opt
-                                    .and_then(|grandchild_name| {
-                                        reserved_memory.get(&grandchild_name).and_then(|grandchild| {
-                                            rest_path.next().map_or_else(|| {
-                                                eprintln!("WARNING: References to non-plain device nodes are not currently supported: /{direct_child_name}/{grandchild_name}");
-                                                None
-                                            }, |great_grandchild_name| {
-                                                grandchild.find(great_grandchild_name, rest_path)
-                                            })
-                                        })
-                                    })
+                .and_then(|grandchild_name| {
+                    reserved_memory.get(&grandchild_name).and_then(|grandchild| {
+                        rest_path.next().map_or_else(|| {
+                            eprintln!("WARNING: References to non-plain device nodes are not currently supported: /{direct_child_name}/{grandchild_name}");
+                            None
+                        }, |great_grandchild_name| {
+                            grandchild.find(great_grandchild_name, rest_path)
+                        })
+                    })
+                })
         } else {
             self.children
                 .get(&direct_child_name)
@@ -262,7 +270,6 @@ impl<'node> super::Node<'node> for Node<'node> {
                     })
                 })
         };
-        // unsafe { mem::transmute(entry) }
         entry
         // entry.map(|rc| {
         //     // This unsafe code bypasses the lifetime limitations of `DeviceNode` and the original `children` map not living long enough before the function returns
@@ -356,7 +363,7 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
         let chosen_node = value.children.remove(&NodeNames::chosen());
 
         let (properties, children) = value.into_components(&mut phandles);
-        let children: Map<NameRef<'node>, Rc<DeviceNode<'node>>> = match children {
+        let children: Map<NameRef<'node>, Rc<device::DeviceNode<'node>>> = match children {
             Ok(children) => children,
             Err(RawNodeError::Cells) => return Err(NodeError::Cells(CellError::Invalid)),
             Err(RawNodeError::Child(child)) => return Err(NodeError::Child(child)),
@@ -364,7 +371,7 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
 
         let mut root = Self {
             phandles,
-            aliases: Map::new(),
+            aliases: Map::default(),
             model,
             compatible,
             serial_number,
@@ -375,7 +382,7 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             higher_caches: caches,
             properties,
             children,
-            chosen: None,
+            chosen: Option::default(),
         };
 
         let aliases = parse_aliases(aliases_node, &root);
@@ -384,11 +391,6 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             .map(|chosen| Chosen::from_node(chosen, &root).map_err(NodeError::Chosen))
             .map(|x| unsafe { mem::transmute(x) })
             .transpose()?;
-        // let chosen = chosen_node
-        //     .map(|chosen| Chosen::from_node(chosen, &root))
-        //     .transpose()
-        //     .map_err(NodeError::Chosen)?;
-        // root.chosen = unsafe { mem::transmute(chosen) };
 
         Ok(root)
     }

@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let device_tree = device_tree::dtb::DeviceTree::from_bytes(&aligned_dt).unwrap();
 
     let root = device_tree.root();
-    // println!("{:#X?}", device_tree.boot_cpu());
+    println!("{:#X?}", device_tree.root().chosen());
 
     // println!("{:X?}", root);
     // print!("$ ");

@@ -4,7 +4,7 @@
 
 use alloc::rc::Rc;
 
-use super::{ChildMap, DeviceNode, PropertyMap, RawNode, RawNodeError};
+use super::{device, ChildMap, PropertyMap, RawNode, RawNodeError};
 use crate::{map::Map, node::PropertyKeys, parse::U32ByteSlice};
 use core::{ffi::CStr, num::NonZeroU32};
 
@@ -120,14 +120,14 @@ pub enum HigherLevelError {
     /// Error parsing the cells of this node, if present
     Cells,
     /// Error parsing a child node
-    Child(super::Error),
+    Child(device::Error),
 }
 
 impl<'node> HigherLevel<'node> {
     /// Creates a new higher-level cache from the given device tree node
     pub(super) fn new(
         mut value: RawNode<'node>,
-        phandles: &mut Map<u32, Rc<DeviceNode<'node>>>,
+        phandles: &mut Map<u32, Rc<device::DeviceNode<'node>>>,
     ) -> Result<(u32, Self), HigherLevelError> {
         if !value
             .properties
