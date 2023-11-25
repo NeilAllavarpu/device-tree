@@ -194,6 +194,15 @@ impl NodeNames {
             .try_into()
             .expect("Should be a valid name")
     }
+
+    #[cfg(feature = "rpi")]
+    /// The node name for the symbols node
+    fn symbols() -> NameRef<'static> {
+        b"__symbols__"
+            .as_slice()
+            .try_into()
+            .expect("Should be a valid name")
+    }
 }
 
 /// Parses the root `/aliases` node and returns a map that converts a name into a reference to the resolved node
@@ -248,6 +257,16 @@ impl<'node> super::Node<'node> for Node<'node> {
         'path: 'node,
     {
         let grandchild_name_opt = rest_path.next();
+        if let Some(node) = self.aliases.get(&direct_child_name) {
+            // self.children
+            //     .get(&direct_child_name)
+            //     .and_then(|direct_child| {
+
+            //     });
+            return grandchild_name_opt.map_or(Some(Rc::clone(node)), |grandchild_name| {
+                node.find(grandchild_name, rest_path)
+            });
+        }
         let entry = if direct_child_name == NodeNames::reserved_memory() {
             let reserved_memory = self.reserved_memory.as_ref()?;
             grandchild_name_opt
@@ -359,6 +378,8 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             .map_err(NodeError::Chassis)?;
 
         let aliases_node = value.children.remove(&NodeNames::aliases());
+        #[cfg(feature = "rpi")]
+        let symbols_node = value.children.remove(&NodeNames::symbols());
 
         let chosen_node = value.children.remove(&NodeNames::chosen());
 
@@ -387,6 +408,18 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
 
         let aliases = parse_aliases(aliases_node, &root);
         root.aliases = unsafe { mem::transmute(aliases) };
+        #[cfg(feature = "rpi")]
+        {
+            let symbols = parse_aliases(symbols_node, &root);
+
+            root.aliases.extend(unsafe {
+                mem::transmute::<_, Map<NameRef<'node>, Rc<device::DeviceNode<'node>>>>(symbols)
+            });
+        };
+
+        for i in root.aliases.iter() {
+            println!("{:?}", i.0);
+        }
         root.chosen = chosen_node
             .map(|chosen| Chosen::from_node(chosen, &root).map_err(NodeError::Chosen))
             .map(|x| unsafe { mem::transmute(x) })

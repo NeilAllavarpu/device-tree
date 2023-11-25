@@ -1,6 +1,7 @@
 #![feature(iter_array_chunks)]
 #![feature(iter_intersperse)]
 
+use core::ffi::CStr;
 use core::ptr::NonNull;
 use core::{iter, mem};
 use std::{
@@ -9,6 +10,8 @@ use std::{
     fs,
     io::{stdin, stdout, BufRead, Write},
 };
+
+use device_tree::node::Node;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let dt_path = env::args().nth(1).ok_or("Missing path to DTB")?;
@@ -27,7 +30,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let device_tree = device_tree::dtb::DeviceTree::from_bytes(&aligned_dt).unwrap();
 
     let root = device_tree.root();
-    println!("{:#X?}", device_tree.root().chosen());
+    println!(
+        "{:#X?}",
+        device_tree.root().find_str("/uart0".as_bytes()).unwrap() // .children()
+                                                                  // .properties()
+                                                                  // .iter()
+                                                                  // .map(|(a, mut b)| { (a, <&CStr>::try_from(b)) })
+                                                                  // .collect::<Vec<_>>()
+    );
 
     // println!("{:X?}", root);
     // print!("$ ");

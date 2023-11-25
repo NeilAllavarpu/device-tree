@@ -141,3 +141,11 @@ impl<K: Ord, V> Default for Map<K, V> {
         }
     }
 }
+
+impl<K: Ord, V> Extend<(K, V)> for Map<K, V> {
+    fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
+        for (key, value) in iter {
+            self.insert(key, value);
+        }
+    }
+}

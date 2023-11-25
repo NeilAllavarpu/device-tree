@@ -3,9 +3,9 @@
 use crate::{map::Map, node::PropertyKeys, parse::U32ByteSlice, split_at_first};
 use alloc::{boxed::Box, vec::Vec};
 use core::ffi::CStr;
+use core::fmt;
 use core::{ffi::FromBytesUntilNulError, fmt::Debug};
 
-#[derive(Debug)]
 /// The model property value is a `<string>` that specifies the manufacturer’s model number of the device.
 pub enum Model<'bytes> {
     /// The recommended format: "manufacturer,model", where manufacturer is a string describing the
@@ -17,6 +17,22 @@ pub enum Model<'bytes> {
     ManufacturerModel(&'bytes [u8], &'bytes [u8]),
     /// An alternate format not of the manufacturer-model form
     Other(&'bytes [u8]),
+}
+
+impl<'bytes> fmt::Debug for Model<'bytes> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::ManufacturerModel(arg0, arg1) => f
+                .debug_tuple("ManufacturerModel")
+                .field(&String::from_utf8_lossy(arg0))
+                .field(&String::from_utf8_lossy(arg1))
+                .finish(),
+            Self::Other(arg0) => f
+                .debug_tuple("Other")
+                .field(&String::from_utf8_lossy(arg0))
+                .finish(),
+        }
+    }
 }
 
 impl<'bytes> From<&'bytes CStr> for Model<'bytes> {

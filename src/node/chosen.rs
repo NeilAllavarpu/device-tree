@@ -18,6 +18,12 @@ pub struct Chosen<'node> {
     stdin: Option<Rc<device::DeviceNode<'node>>>,
     /// Any other properties under the `Chosen` node
     miscellaneous: PropertyMap<'node>,
+    #[cfg(feature = "rpi")]
+    overlay_prefix: Option<&'node CStr>,
+    #[cfg(feature = "rpi")]
+    os_prefix: Option<&'node CStr>,
+    #[cfg(feature = "rpi")]
+    rpi_boardrev_ext: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -28,6 +34,9 @@ pub enum ChosenError<'node> {
     StdoutDanglingPath(&'node CStr),
     StdinPathInvalid(U32ByteSlice<'node>),
     StdinDanglingPath(&'node CStr),
+    OverlayPrefix(U32ByteSlice<'node>),
+    OsPrefix(U32ByteSlice<'node>),
+    RpiBoardrevExt(U32ByteSlice<'node>),
 }
 
 impl<'node> Chosen<'node> {
@@ -70,11 +79,38 @@ impl<'node> Chosen<'node> {
         let stdin = rc_from_node(&mut chosen.properties, PropertyKeys::STDIN_PATH, root)?
             .or_else(|| stdout.as_ref().map(Rc::clone));
 
+        #[cfg(feature = "rpi")]
+        let overlay_prefix = chosen
+            .properties
+            .remove(PropertyKeys::OVERLAY_PREFIX)
+            .map(|bytes| <&CStr>::try_from(bytes).map_err(|_err| ChosenError::OverlayPrefix(bytes)))
+            .transpose()?;
+
+        #[cfg(feature = "rpi")]
+        let os_prefix = chosen
+            .properties
+            .remove(PropertyKeys::OS_PREFIX)
+            .map(|bytes| <&CStr>::try_from(bytes).map_err(|_err| ChosenError::OsPrefix(bytes)))
+            .transpose()?;
+
+        #[cfg(feature = "rpi")]
+        let rpi_boardrev_ext = chosen
+            .properties
+            .remove(PropertyKeys::RPI_BOARDREV_EXT)
+            .map(|bytes| u32::try_from(bytes).map_err(|_err| ChosenError::RpiBoardrevExt(bytes)))
+            .transpose()?;
+
         Ok(Self {
             boot_args,
             stdout,
             stdin,
             miscellaneous: chosen.properties,
+            #[cfg(feature = "rpi")]
+            overlay_prefix,
+            #[cfg(feature = "rpi")]
+            os_prefix,
+            #[cfg(feature = "rpi")]
+            rpi_boardrev_ext,
         })
     }
 

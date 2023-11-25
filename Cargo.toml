@@ -2,7 +2,13 @@
 name = "device-tree"
 version = "0.1.0"
 edition = "2021"
+authors = ["Neil Allavarpu"]
+description = "Parsing for device tree blobs"
+keywords = ["device tree", "device tree blob"]
+categories = ["parsing", "bare-metal"]
 
+[features]
+rpi = []
 
 [lib]
 name = "device_tree"

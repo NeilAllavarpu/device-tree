@@ -53,6 +53,9 @@ impl PropertyKeys {
     pub const BOOTARGS: &'static CStr = to_c_str(b"bootargs\0");
     pub const STDIN_PATH: &'static CStr = to_c_str(b"stdin-path\0");
     pub const STDOUT_PATH: &'static CStr = to_c_str(b"stdout-path\0");
+    pub const OVERLAY_PREFIX: &'static CStr = to_c_str(b"overlay_prefix\0");
+    pub const OS_PREFIX: &'static CStr = to_c_str(b"os_prefix\0");
+    pub const RPI_BOARDREV_EXT: &'static CStr = to_c_str(b"rpi-boardrev-ext\0");
 }
 
 /// A Device Tree Node

@@ -12,6 +12,7 @@
 #![deny(clippy::perf)]
 #![warn(clippy::style)]
 #![deny(clippy::suspicious)]
+#![warn(clippy::cargo)]
 #![feature(cstr_count_bytes)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![expect(clippy::single_call_fn, reason = "Desired code style")]
