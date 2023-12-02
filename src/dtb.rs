@@ -397,7 +397,7 @@ impl<'dtb> DeviceTree<'dtb> {
 
     #[inline]
     #[must_use]
-    pub const fn root(&self) -> &root::Node {
+    pub const fn root(&'dtb self) -> &root::Node<'dtb> {
         &self.root
     }
 

@@ -6,18 +6,20 @@ use crate::node_name::NameRef;
 use crate::parse::to_c_str;
 use crate::parse::U32ByteSlice;
 use alloc::rc::Rc;
+use alloc::rc::Weak;
 use core::ffi::CStr;
 
 pub mod cache;
 pub mod chosen;
 pub mod cpu;
 pub mod device;
+pub mod interrupt;
 pub mod memory_region;
 pub mod reserved_memory;
 pub mod root;
 
 /// Maps a name to a child node
-type ChildMap<'node> = Map<NameRef<'node>, Rc<device::DeviceNode<'node>>>;
+type ChildMap<'node> = Map<NameRef<'node>, Rc<device::Node<'node>>>;
 /// Maps a property string key to the corresponding raw bytes
 type PropertyMap<'node> = Map<&'node CStr, U32ByteSlice<'node>>;
 
@@ -56,6 +58,12 @@ impl PropertyKeys {
     pub const OVERLAY_PREFIX: &'static CStr = to_c_str(b"overlay_prefix\0");
     pub const OS_PREFIX: &'static CStr = to_c_str(b"os_prefix\0");
     pub const RPI_BOARDREV_EXT: &'static CStr = to_c_str(b"rpi-boardrev-ext\0");
+    pub const INTERRUPT_CONTROLLER: &'static CStr = to_c_str(b"interrupt-controller\0");
+    pub const INTERRUPT_CELLS: &'static CStr = to_c_str(b"#interrupt-cells\0");
+    pub const INTERRUPTS: &'static CStr = to_c_str(b"interrupts\0");
+    pub const INTERRUPT_PARENT: &'static CStr = to_c_str(b"interrupt-parent\0");
+    pub const INTERRUPT_MAP: &'static CStr = to_c_str(b"interrupt-map\0");
+    pub const INTERRUPT_MAP_MASK: &'static CStr = to_c_str(b"interrupt-map-mask\0");
 }
 
 /// A Device Tree Node
@@ -122,7 +130,8 @@ impl<'node> RawNode<'node> {
     /// Error conditions indicate any errors with parsing some child of the node
     fn into_components(
         mut self,
-        phandles: &mut Map<u32, Rc<device::DeviceNode<'node>>>,
+        phandles: &mut Map<u32, Rc<device::Node<'node>>>,
+        me: Option<&Weak<device::Node<'node>>>,
     ) -> (PropertyMap<'node>, Result<ChildMap<'node>, RawNodeError>) {
         let (child_addr_cells, child_size_cells) = self.extract_cell_counts();
         (
@@ -135,11 +144,12 @@ impl<'node> RawNode<'node> {
                 self.children
                     .into_iter()
                     .map(|(name, raw_node)| {
-                        device::DeviceNode::new(
+                        device::Node::new(
                             raw_node,
                             child_addr_cells.ok(),
                             child_size_cells.ok(),
                             phandles,
+                            me,
                         )
                         .map(|device_node| (name, device_node))
                     })
@@ -156,14 +166,15 @@ impl<'node> RawNode<'node> {
         self,
         address_cells: Option<u8>,
         size_cells: Option<u8>,
-        phandles: &mut Map<u32, Rc<device::DeviceNode<'node>>>,
+        phandles: &mut Map<u32, Rc<device::Node<'node>>>,
+        me: Option<&Weak<device::Node<'node>>>,
     ) -> (PropertyMap<'node>, Result<ChildMap<'node>, RawNodeError>) {
         (
             self.properties,
             self.children
                 .into_iter()
                 .map(|(name, raw_node)| {
-                    device::DeviceNode::new(raw_node, address_cells, size_cells, phandles)
+                    device::Node::new(raw_node, address_cells, size_cells, phandles, me)
                         .map(|device_node| (name, device_node))
                 })
                 .try_collect()
@@ -172,18 +183,18 @@ impl<'node> RawNode<'node> {
     }
 }
 
-pub trait Node<'node> {
+pub trait Node<'data> {
     fn properties(&self) -> &PropertyMap;
-    fn children(&self) -> &ChildMap<'node>;
+    fn children(&self) -> &ChildMap<'data>;
 
     #[inline]
-    fn find<'path>(
+    fn find<'path, 'node>(
         &'node self,
         sub_path: NameRef<'path>,
         mut rest_path: impl Iterator<Item = NameRef<'path>>,
-    ) -> Option<Rc<device::DeviceNode<'node>>>
+    ) -> Option<Rc<device::Node<'data>>>
     where
-        'path: 'node,
+        'path: 'data,
     {
         self.children().get(&sub_path).and_then(|node| {
             rest_path.next().map_or_else(
@@ -194,9 +205,9 @@ pub trait Node<'node> {
     }
 
     #[inline]
-    fn find_str<'path>(&'node self, path: &'node [u8]) -> Option<Rc<device::DeviceNode<'node>>>
+    fn find_str<'path, 'node>(&'node self, path: &'path [u8]) -> Option<Rc<device::Node<'data>>>
     where
-        'path: 'node,
+        'path: 'data,
     {
         let mut names = path
             .split(|&char| char == b'/')

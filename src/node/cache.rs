@@ -4,7 +4,7 @@
 
 use alloc::rc::Rc;
 
-use super::{device, ChildMap, PropertyMap, RawNode, RawNodeError};
+use super::{device, ChildMap, Node, PropertyMap, RawNode, RawNodeError};
 use crate::{map::Map, node::PropertyKeys, parse::U32ByteSlice};
 use core::{ffi::CStr, num::NonZeroU32};
 
@@ -88,6 +88,30 @@ impl Description {
                 .and_then(NonZeroU32::new),
         }
     }
+
+    #[must_use]
+    #[inline]
+    pub const fn size(&self) -> Option<NonZeroU32> {
+        self.size
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn sets(&self) -> Option<NonZeroU32> {
+        self.sets
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn block_size(&self) -> Option<NonZeroU32> {
+        self.block_size
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn line_size(&self) -> Option<NonZeroU32> {
+        self.line_size
+    }
 }
 
 /// Processors and systems may implement additional levels of cache hierarchy. For example, second-level (L2) or third-level (L3) caches.
@@ -127,7 +151,7 @@ impl<'node> HigherLevel<'node> {
     /// Creates a new higher-level cache from the given device tree node
     pub(super) fn new(
         mut value: RawNode<'node>,
-        phandles: &mut Map<u32, Rc<device::DeviceNode<'node>>>,
+        phandles: &mut Map<u32, Rc<device::Node<'node>>>,
     ) -> Result<(u32, Self), HigherLevelError> {
         if !value
             .properties
@@ -152,7 +176,7 @@ impl<'node> HigherLevel<'node> {
 
         let cache = cache_description!(&mut value.properties, b"");
 
-        let (properties, children) = value.into_components(phandles);
+        let (properties, children) = value.into_components(phandles, None);
         let children = match children {
             Ok(children) => children,
             Err(RawNodeError::Cells) => return Err(HigherLevelError::Cells),
@@ -167,6 +191,30 @@ impl<'node> HigherLevel<'node> {
                 properties,
             },
         ))
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn cache(&self) -> &Description {
+        &self.cache
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn level(&self) -> u32 {
+        self.level
+    }
+}
+
+impl<'node> Node<'node> for HigherLevel<'node> {
+    #[inline]
+    fn properties(&self) -> &PropertyMap {
+        &self.properties
+    }
+
+    #[inline]
+    fn children(&self) -> &ChildMap<'node> {
+        &self.children
     }
 }
 

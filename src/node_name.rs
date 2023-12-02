@@ -255,8 +255,8 @@ impl<'bytes> TryFrom<&'bytes [u8]> for NameRef<'bytes> {
                 if address_parts.next().is_some() {
                     eprintln!(
                         "WARNING: unhandled comma in unit address: {}@{}",
-                        str::from_utf8(node_name).unwrap_or("{invalid}"),
-                        str::from_utf8(unit_address).unwrap_or("{invalid}"),
+                        String::from_utf8_lossy(node_name),
+                        String::from_utf8_lossy(unit_address)
                     );
                 }
                 (node_name.len() <= Self::MAX_NODE_NAME_LENGTH)
@@ -317,7 +317,7 @@ impl Debug for NameRef<'_> {
 impl Display for NameRef<'_> {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         if let Some(unit_address) = self.unit_address {
-            write!(formatter, "{}@{}", self.node_name, unit_address)
+            write!(formatter, "{}@{:x}", self.node_name, unit_address)
         } else {
             write!(formatter, "{}", self.node_name)
         }

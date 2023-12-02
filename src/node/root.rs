@@ -1,6 +1,6 @@
 //! The root node of the device tree. All nodes are descendants of this.
 
-use super::chosen::{Chosen, ChosenError};
+use super::chosen::{Chosen, Error};
 use super::{cache::HigherLevel, cpu, memory_region, reserved_memory, RawNode, RawNodeError};
 use super::{device, ChildMap, PropertyMap};
 use crate::property::{ChassisError, ChassisType};
@@ -12,7 +12,6 @@ use crate::{
 };
 use alloc::rc::Rc;
 use core::ffi::CStr;
-use core::mem;
 use core::num::NonZeroU8;
 
 /// The base of the device tree that all nodes are children of
@@ -54,9 +53,9 @@ pub struct Node<'node> {
     /// The property name specifies the alias name.
     /// The property value specifies the full path to a node in the devicetree.
     /// For example, the property `serial0 = "/simple-bus@fe000000/ serial@llc500"` defines the alias `serial0`.
-    aliases: Map<NameRef<'node>, Rc<device::DeviceNode<'node>>>,
+    aliases: Map<NameRef<'node>, Rc<device::Node<'node>>>,
     /// Map of phandles to nodes
-    phandles: Map<u32, Rc<device::DeviceNode<'node>>>,
+    phandles: Map<u32, Rc<device::Node<'node>>>,
     /// The remainder of this node's properties
     properties: PropertyMap<'node>,
     /// Children nodes of the root
@@ -111,7 +110,7 @@ impl<'node> Node<'node> {
 
     #[must_use]
     #[inline]
-    pub const fn phandles(&self) -> &Map<u32, Rc<device::DeviceNode<'node>>> {
+    pub const fn phandles(&self) -> &Map<u32, Rc<device::Node<'node>>> {
         &self.phandles
     }
 
@@ -153,7 +152,7 @@ pub enum NodeError<'node> {
     Child(device::Error),
     Chassis(ChassisError<'node>),
     Alias,
-    Chosen(ChosenError<'node>),
+    Chosen(Error<'node>),
 }
 
 /// "Constants" for various node names
@@ -206,10 +205,13 @@ impl NodeNames {
 }
 
 /// Parses the root `/aliases` node and returns a map that converts a name into a reference to the resolved node
-fn parse_aliases<'node>(
-    aliases_node: Option<RawNode<'node>>,
-    root: &'node Node<'node>,
-) -> Map<NameRef<'node>, Rc<device::DeviceNode<'node>>> {
+fn parse_aliases<'data, 'root>(
+    aliases_node: Option<RawNode<'data>>,
+    root: &'root Node<'data>,
+) -> Map<NameRef<'data>, Rc<device::Node<'data>>>
+where
+    'data: 'root,
+{
     aliases_node.map_or_else(Map::new, |aliases| {
         aliases
             .properties
@@ -220,7 +222,8 @@ fn parse_aliases<'node>(
                         .ok()
                         .and_then(|c_path| {
                             use super::Node;
-                            let entry = root.find_str(c_path.to_bytes());
+                            let entry: Option<Rc<device::Node<'data>>> =
+                                root.find_str(c_path.to_bytes());
                             if entry.is_none() {
                                 eprintln!(
                                     "WARNING: Could not match {} to {}",
@@ -236,33 +239,28 @@ fn parse_aliases<'node>(
     })
 }
 
-impl<'node> super::Node<'node> for Node<'node> {
+impl<'data> super::Node<'data> for Node<'data> {
     #[inline]
     fn properties(&self) -> &PropertyMap {
         &self.properties
     }
 
     #[inline]
-    fn children(&self) -> &ChildMap<'node> {
+    fn children(&self) -> &ChildMap<'data> {
         &self.children
     }
 
     #[inline]
-    fn find<'path>(
+    fn find<'node, 'path>(
         &'node self,
         direct_child_name: NameRef<'path>,
         mut rest_path: impl Iterator<Item = NameRef<'path>>,
-    ) -> Option<Rc<device::DeviceNode<'node>>>
+    ) -> Option<Rc<device::Node<'data>>>
     where
-        'path: 'node,
+        'path: 'data,
     {
         let grandchild_name_opt = rest_path.next();
         if let Some(node) = self.aliases.get(&direct_child_name) {
-            // self.children
-            //     .get(&direct_child_name)
-            //     .and_then(|direct_child| {
-
-            //     });
             return grandchild_name_opt.map_or(Some(Rc::clone(node)), |grandchild_name| {
                 node.find(grandchild_name, rest_path)
             });
@@ -290,17 +288,6 @@ impl<'node> super::Node<'node> for Node<'node> {
                 })
         };
         entry
-        // entry.map(|rc| {
-        //     // This unsafe code bypasses the lifetime limitations of `DeviceNode` and the original `children` map not living long enough before the function returns
-        //     let rc_pointer = Rc::into_raw(rc);
-        //     let rc_pointer = rc_pointer.cast::<DeviceNode<'node>>();
-        //     // SAFETY:
-        //     // * This raw pointer came from the `Rc::into_raw` call above
-        //     // * `DeviceNode` always has the same size and alignment of itself
-        //     // * It is valid to perform this semi-transmute because the lifetime of all `DeviceNode`s are tied to the lifetime of the underlying bytes of the device tree blob itself, and this `Root`` also cannot last longer than that.
-        //     // So the lifetime of the new `DeviceNode` cannot outlive the data that it borrows from
-        //     unsafe { Rc::from_raw(rc_pointer) }
-        // })
     }
 }
 
@@ -308,6 +295,7 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
     type Error = NodeError<'node>;
 
     #[inline]
+    #[expect(clippy::too_many_lines)]
     fn try_from(mut value: RawNode<'node>) -> Result<Self, Self::Error> {
         let mut phandles = Map::new();
         let model = value
@@ -383,8 +371,8 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
 
         let chosen_node = value.children.remove(&NodeNames::chosen());
 
-        let (properties, children) = value.into_components(&mut phandles);
-        let children: Map<NameRef<'node>, Rc<device::DeviceNode<'node>>> = match children {
+        let (properties, children) = value.into_components(&mut phandles, None);
+        let children: Map<NameRef<'node>, Rc<device::Node<'node>>> = match children {
             Ok(children) => children,
             Err(RawNodeError::Cells) => return Err(NodeError::Cells(CellError::Invalid)),
             Err(RawNodeError::Child(child)) => return Err(NodeError::Child(child)),
@@ -406,23 +394,12 @@ impl<'node> TryFrom<RawNode<'node>> for Node<'node> {
             chosen: Option::default(),
         };
 
-        let aliases = parse_aliases(aliases_node, &root);
-        root.aliases = unsafe { mem::transmute(aliases) };
+        root.aliases = parse_aliases(aliases_node, &root);
         #[cfg(feature = "rpi")]
-        {
-            let symbols = parse_aliases(symbols_node, &root);
+        root.aliases.extend(parse_aliases(symbols_node, &root));
 
-            root.aliases.extend(unsafe {
-                mem::transmute::<_, Map<NameRef<'node>, Rc<device::DeviceNode<'node>>>>(symbols)
-            });
-        };
-
-        for i in root.aliases.iter() {
-            println!("{:?}", i.0);
-        }
         root.chosen = chosen_node
             .map(|chosen| Chosen::from_node(chosen, &root).map_err(NodeError::Chosen))
-            .map(|x| unsafe { mem::transmute(x) })
             .transpose()?;
 
         Ok(root)

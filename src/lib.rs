@@ -91,10 +91,11 @@ fn split_at_first<'slice, T: PartialEq>(
 /// # Safety
 /// It must be valid to transmute a series of bytes, interpreted as `P`s, into a series of bytes, interpreted as `Q`s.
 /// The sizes of individual elements do not have to match, but as slices the lengths computed must match
-unsafe fn transmute_slice_down<P, Q>(slice: &[P]) -> &[Q] {
+unsafe fn transmute_slice_down<'slice, P, Q>(slice: &'slice [P]) -> &'slice [Q] {
     let size_to =
         NonZeroUsize::new(mem::size_of::<Q>()).expect("Cannot transmute with zero-sized types");
     assert!(mem::size_of::<P>() % size_to == 0, "Can only transmute a slice down if the sizes of the types involved dont cross element boundaries");
+    assert!(mem::align_of::<P>() % mem::align_of::<Q>() == 0, "Can only transmute a slice down if the alignment of the types involved dont cross element boundaries");
 
     let transmuted_pointer = NonNull::slice_from_raw_parts(
         NonNull::from(slice).as_non_null_ptr().cast(),

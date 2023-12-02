@@ -32,11 +32,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let root = device_tree.root();
     println!(
         "{:#X?}",
-        device_tree.root().find_str("/uart0".as_bytes()).unwrap() // .children()
-                                                                  // .properties()
-                                                                  // .iter()
-                                                                  // .map(|(a, mut b)| { (a, <&CStr>::try_from(b)) })
-                                                                  // .collect::<Vec<_>>()
+        device_tree
+            .root()
+            .find_str("/soc".as_bytes())
+            .unwrap()
+            .children()
+            .iter()
+            .map(|(x, y)| x)
+            .collect::<Box<_>>() // .properties()
+                                 // .iter() // .map(|(a, b)| { (a) })
+                                 // .collect::<Vec<_>>()
     );
 
     // println!("{:X?}", root);

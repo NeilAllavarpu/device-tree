@@ -20,14 +20,14 @@ pub enum Model<'bytes> {
 }
 
 impl<'bytes> fmt::Debug for Model<'bytes> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::ManufacturerModel(arg0, arg1) => f
+            Self::ManufacturerModel(arg0, arg1) => formatter
                 .debug_tuple("ManufacturerModel")
                 .field(&String::from_utf8_lossy(arg0))
                 .field(&String::from_utf8_lossy(arg1))
                 .finish(),
-            Self::Other(arg0) => f
+            Self::Other(arg0) => formatter
                 .debug_tuple("Other")
                 .field(&String::from_utf8_lossy(arg0))
                 .finish(),

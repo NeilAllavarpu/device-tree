@@ -4,7 +4,6 @@
 
 use alloc::rc::Rc;
 
-use super::root::NodeNames;
 use super::{device, ChildMap, PropertyMap, RawNode, RawNodeError};
 use crate::map::Map;
 use crate::node_name::NameRef;
@@ -150,7 +149,7 @@ impl<'node> Node<'node> {
         mut value: RawNode<'node>,
         address_cells: u8,
         size_cells: NonZeroU8,
-        phandles: &mut Map<u32, Rc<device::DeviceNode<'node>>>,
+        phandles: &mut Map<u32, Rc<device::Node<'node>>>,
     ) -> Result<Self, Error> {
         let size = value
             .properties
@@ -212,7 +211,7 @@ impl<'node> Node<'node> {
             })
             .transpose()?;
 
-        let (properties, children) = value.into_components(phandles);
+        let (properties, children) = value.into_components(phandles, None);
         let children = match children {
             Ok(children) => children,
             Err(RawNodeError::Cells) => return Err(Error::Cells),
@@ -245,7 +244,7 @@ impl<'node> Node<'node> {
         mut parent: RawNode<'node>,
         address_cells: u8,
         size_cells: NonZeroU8,
-        phandles: &mut Map<u32, Rc<device::DeviceNode<'node>>>,
+        phandles: &mut Map<u32, Rc<device::Node<'node>>>,
     ) -> Result<Map<NameRef<'node>, Self>, RootError> {
         // #address-cells and #size-cells should use the same values as for the root node, and ranges should be empty so that address translation logic works correctly.
         let (reserved_memory_addr_cells, reserved_memory_size_cells) = parent.extract_cell_counts();
@@ -269,6 +268,24 @@ impl<'node> Node<'node> {
             })
             .try_collect()
             .map_err(RootError::Child)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn memory(&self) -> &Range {
+        &self.memory
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn usage(&self) -> &Usage {
+        &self.usage
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn compatible(&self) -> Option<&Compatible<'_>> {
+        self.compatible.as_ref()
     }
 }
 

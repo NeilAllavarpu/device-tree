@@ -102,4 +102,28 @@ impl<'node> MemoryRegion<'node> {
             properties: node.properties,
         })
     }
+
+    #[inline]
+    #[must_use]
+    pub fn regions(&self) -> &[(u64, u64)] {
+        self.regions.as_ref()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn hotpluggable(&self) -> bool {
+        self.hotpluggable
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn initial_mapped_area(&self) -> Option<&InitialMappedArea> {
+        self.initial_mapped_area.as_ref()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn properties(&self) -> &Map<&'node CStr, U32ByteSlice<'node>> {
+        &self.properties
+    }
 }

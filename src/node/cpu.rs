@@ -88,6 +88,11 @@ pub enum RootError {
     RegMismatch(Option<u64>, u32),
 }
 
+/// A map of CPU IDs to CPU nodes
+type CpuMap<'node> = Map<u32, Rc<Node<'node>>>;
+/// A map of cache IDs to cache Nodes
+type CacheMap<'node> = Map<u32, Rc<HigherLevel<'node>>>;
+
 impl<'node> Node<'node> {
     /// Parses and creates a CPU node from the provided informaiton
     fn new<'parsing>(
@@ -171,8 +176,8 @@ impl<'node> Node<'node> {
     /// Parses the parent CPU node and returns a map describing all the children CPU nodes + caches, or returns an error
     pub(super) fn parse_parent(
         mut parent: RawNode<'node>,
-        phandles: &mut Map<u32, Rc<device::DeviceNode<'node>>>,
-    ) -> Result<(Map<u32, Rc<Self>>, Map<u32, Rc<HigherLevel<'node>>>), RootError> {
+        phandles: &mut Map<u32, Rc<device::Node<'node>>>,
+    ) -> Result<(CpuMap<'node>, CacheMap<'node>), RootError> {
         let (Ok(cpu_addr_cells), Ok(0)) = parent.extract_cell_counts() else {
             return Err(RootError::Reg);
         };
@@ -207,5 +212,35 @@ impl<'node> Node<'node> {
             })
             .try_collect()
             .map(|cpus| (cpus, caches))
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn enable_method(&self) -> Option<&EnableMethod<'_>> {
+        self.enable_method.as_ref()
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn l1_cache(&self) -> &L1 {
+        &self.l1_cache
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn status(&self) -> &Status {
+        &self.status
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn next_cache(&self) -> Option<&Rc<HigherLevel<'_>>> {
+        self.next_cache.as_ref()
+    }
+
+    #[must_use]
+    #[inline]
+    pub const fn properties(&self) -> &Map<&'node CStr, U32ByteSlice<'node>> {
+        &self.properties
     }
 }
