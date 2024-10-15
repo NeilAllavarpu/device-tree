@@ -1,6 +1,9 @@
 use core::ffi::CStr;
 
-use alloc::rc::{Rc, Weak};
+use alloc::{
+    boxed::Box,
+    rc::{Rc, Weak},
+};
 
 use crate::{
     map::Map,

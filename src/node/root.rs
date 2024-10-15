@@ -10,6 +10,7 @@ use crate::{
     node_name::{NameRef, NameSlice},
     property::Model,
 };
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::ffi::CStr;
 use core::num::NonZeroU8;
@@ -225,7 +226,7 @@ where
                             let entry: Option<Rc<device::Node<'data>>> =
                                 root.find_str(c_path.to_bytes());
                             if entry.is_none() {
-                                eprintln!(
+                                panic!(
                                     "WARNING: Could not match {} to {}",
                                     name.to_string_lossy(),
                                     c_path.to_string_lossy()
@@ -271,7 +272,7 @@ impl<'data> super::Node<'data> for Node<'data> {
                 .and_then(|grandchild_name| {
                     reserved_memory.get(&grandchild_name).and_then(|grandchild| {
                         rest_path.next().map_or_else(|| {
-                            eprintln!("WARNING: References to non-plain device nodes are not currently supported: /{direct_child_name}/{grandchild_name}");
+                            unimplemented!("WARNING: References to non-plain device nodes are not currently supported: /{direct_child_name}/{grandchild_name}");
                             None
                         }, |great_grandchild_name| {
                             grandchild.find(great_grandchild_name, rest_path)

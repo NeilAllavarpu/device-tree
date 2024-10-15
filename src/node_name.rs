@@ -11,6 +11,10 @@ use core::ops::Deref;
 use core::ptr;
 use core::str;
 
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::string::String;
+
 /// A valid character for a node name.
 ///
 /// Node names are restricted to alphanumeric ASCII, commas, periods, underscores, plus signs, and dashes
@@ -253,7 +257,7 @@ impl<'bytes> TryFrom<&'bytes [u8]> for NameRef<'bytes> {
                     .next()
                     .expect("Split iterator should always have at least one entry");
                 if address_parts.next().is_some() {
-                    eprintln!(
+                    panic!(
                         "WARNING: unhandled comma in unit address: {}@{}",
                         String::from_utf8_lossy(node_name),
                         String::from_utf8_lossy(unit_address)

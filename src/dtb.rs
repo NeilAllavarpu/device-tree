@@ -6,6 +6,8 @@ use crate::node::{cpu, RawNode};
 use crate::node_name::NameRefError;
 use crate::transmute_slice_down;
 use crate::{map::Map, node::root, node_name::NameRef, parse::U32ByteSlice};
+use alloc::boxed::Box;
+use alloc::vec;
 use alloc::{rc::Rc, vec::Vec};
 use core::ffi::CStr;
 use core::iter;

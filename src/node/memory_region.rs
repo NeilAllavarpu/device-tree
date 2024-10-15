@@ -1,4 +1,6 @@
 //! Types to describe the physical memory present on a device, as specified under the root node of the Device Tree
+use alloc::{boxed::Box, vec::Vec};
+
 use super::{PropertyKeys, RawNode};
 use crate::{map::Map, node_name::NameRef, parse::U32ByteSlice};
 use core::{ffi::CStr, num::NonZeroU32};

@@ -2,7 +2,9 @@
 //!
 //! This is different from the memory reservations described in the DTB that are not part of the device tree directly
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
+use alloc::vec::Vec;
 
 use super::{device, ChildMap, PropertyMap, RawNode, RawNodeError};
 use crate::map::Map;
