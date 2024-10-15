@@ -29,7 +29,7 @@ impl<K: Ord, V> Map<K, V> {
         K: Borrow<Q>,
     {
         self.contents
-            .binary_search_by(|&(ref elem_key, _)| elem_key.borrow().cmp(key))
+            .binary_search_by_key(&key, |&(ref elem_key, _)| elem_key.borrow())
     }
 
     /// Inserts a key-value pair into the map.

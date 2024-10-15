@@ -19,15 +19,16 @@ pub enum Model<'bytes> {
     Other(&'bytes [u8]),
 }
 
-impl<'bytes> fmt::Debug for Model<'bytes> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl fmt::Debug for Model<'_> {
+    #[expect(clippy::min_ident_chars, reason = "Default parameter name")]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::ManufacturerModel(arg0, arg1) => formatter
+            Self::ManufacturerModel(arg0, arg1) => f
                 .debug_tuple("ManufacturerModel")
                 .field(&String::from_utf8_lossy(arg0))
                 .field(&String::from_utf8_lossy(arg1))
                 .finish(),
-            Self::Other(arg0) => formatter
+            Self::Other(arg0) => f
                 .debug_tuple("Other")
                 .field(&String::from_utf8_lossy(arg0))
                 .finish(),
@@ -169,7 +170,7 @@ impl<'bytes> TryFrom<U32ByteSlice<'bytes>> for Status<'bytes> {
 /// If a client program recognizes any of the methods, it may use it.
 #[derive(Debug)]
 pub enum EnableMethod<'bytes> {
-    /// The CPU is enabled with the spin table method defined in the DTSpec.
+    /// The CPU is enabled with the spin table method defined in the `DTSpec`.
     SpinTable(u64),
     /// Implementation dependent string that describes the method by which a CPU is released from a "disabled" state.
     ///

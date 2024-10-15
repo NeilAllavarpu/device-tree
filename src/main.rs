@@ -1,14 +1,12 @@
 #![feature(iter_array_chunks)]
 #![feature(iter_intersperse)]
 
-use core::ffi::CStr;
-use core::ptr::NonNull;
-use core::{iter, mem};
+use core::mem;
 use std::{
     env,
     error::Error,
     fs,
-    io::{stdin, stdout, BufRead, Write},
+    io::{stdout, Write},
 };
 
 use device_tree::node::Node;
@@ -38,15 +36,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             .unwrap()
             .children()
             .iter()
-            .map(|(x, y)| x)
+            .map(|(x, _)| x)
             .collect::<Box<_>>() // .properties()
                                  // .iter() // .map(|(a, b)| { (a) })
                                  // .collect::<Vec<_>>()
     );
 
-    // println!("{:X?}", root);
-    // print!("$ ");
-    // stdout().flush().unwrap();
+    println!("{:X?}", root);
+    print!("$ ");
+    stdout().flush().unwrap();
 
     // for line in stdin().lock().lines() {
     //     let line = line?;

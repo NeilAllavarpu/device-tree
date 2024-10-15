@@ -63,6 +63,7 @@ impl<'bytes> U32ByteSlice<'bytes> {
     }
 
     /// Removes the first two `u32`s from this slice and converts it to a `u64`, if there are enough `u32`s present
+    #[expect(clippy::unwrap_in_result, reason = "Should never fail")]
     pub fn consume_u64(&mut self) -> Option<u64> {
         if self.remaining_u32s() >= 2 {
             self.bytes
@@ -146,6 +147,7 @@ impl<'bytes> U32ByteSlice<'bytes> {
 
     /// Takes the first `count` *bytes* from the slice, if there are enough.
     /// After the removal, this slice is still aligned to `u32`s, i.e. padding may be discarded
+    #[expect(clippy::unwrap_in_result, reason = "Should never fail")]
     pub fn take(&mut self, bytes: usize) -> Option<Self> {
         if bytes <= self.len_bytes() {
             self.bytes
