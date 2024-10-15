@@ -2,7 +2,7 @@
 //!
 //! This crate parses a flattened device tree/device tree blob (DTB) from some location in memory, and uses minimal allocations to convert this into a convenient Rust format.
 
-// #![no_std]
+#![no_std]
 #![warn(clippy::all)]
 #![warn(clippy::restriction)]
 #![warn(clippy::complexity)]

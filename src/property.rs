@@ -1,6 +1,7 @@
 //! Various properties that all device nodes may contain
 
 use crate::{map::Map, node::PropertyKeys, parse::U32ByteSlice, split_at_first};
+use alloc::string::String;
 use alloc::{boxed::Box, vec::Vec};
 use core::ffi::CStr;
 use core::fmt;

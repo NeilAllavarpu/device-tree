@@ -1,6 +1,6 @@
 //! Space-efficient maps, designed for primarily immutable access. These maps are stored as sorted arrays and looked up via binary search, so that elements can be as packed together as possible to minimize space usage
 
-use alloc::vec;
+use alloc::vec::{self, Vec};
 use core::borrow::Borrow;
 use core::fmt::{self, Debug, Formatter};
 use core::mem;

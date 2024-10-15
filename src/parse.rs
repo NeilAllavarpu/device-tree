@@ -9,6 +9,8 @@ use core::{
     ptr::NonNull,
 };
 
+use alloc::{boxed::Box, vec::Vec};
+
 /// A `U32ByteSlice` encapsulates a slice of `u32`s in big-endian format.
 /// This is the format used by the device tree header and struct portion of the device tree blob.
 #[derive(Debug, Clone, Copy)]
@@ -91,7 +93,7 @@ impl<'bytes> U32ByteSlice<'bytes> {
                 let value = self.consume_u64();
                 for _ in 2..count {
                     if self.consume_u32() != Some(0) {
-                        eprintln!("WARNING: Cannot handle cell count {cell_count}");
+                        panic!("WARNING: Cannot handle cell count {cell_count}");
                     }
                 }
                 value
