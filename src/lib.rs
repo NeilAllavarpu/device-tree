@@ -47,7 +47,7 @@
 #![feature(slice_ptr_get)]
 #![feature(concat_bytes)]
 #![feature(slice_take)]
-#![feature(strict_provenance)]
+
 use core::{mem, num::NonZeroUsize, ptr::NonNull};
 
 extern crate alloc;
@@ -83,7 +83,7 @@ fn split_at_first<'slice, T: PartialEq>(
 /// # Safety
 /// It must be valid to transmute a series of bytes, interpreted as `P`s, into a series of bytes, interpreted as `Q`s.
 /// The sizes of individual elements do not have to match, but as slices the lengths computed must match
-unsafe fn transmute_slice_down<'slice, P, Q>(slice: &'slice [P]) -> &'slice [Q] {
+unsafe fn transmute_slice_down<P, Q>(slice: &[P]) -> &[Q] {
     let size_to =
         NonZeroUsize::new(mem::size_of::<Q>()).expect("Cannot transmute with zero-sized types");
     assert!(mem::size_of::<P>() % size_to == 0, "Can only transmute a slice down if the sizes of the types involved dont cross element boundaries");

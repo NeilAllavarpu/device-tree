@@ -88,7 +88,7 @@ impl<K: Ord, V> Map<K, V> {
         mut filter: F,
     ) -> impl Iterator<Item = (K, V)> + 'map {
         self.contents
-            .extract_if(move |&mut (ref key, ref value)| filter(key, value))
+            .extract_if(.., move |&mut (ref key, ref value)| filter(key, value))
     }
 
     /// Returns `true` if the map contains no entries
